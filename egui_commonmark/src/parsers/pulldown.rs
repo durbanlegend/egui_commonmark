@@ -615,9 +615,20 @@ impl CommonMarkViewerInternal {
         text: &str,
         src_span: Range<usize>,
     ) {
-        // Highlight colours — legible in both light and dark themes.
-        const MATCH_BG: egui::Color32 = egui::Color32::from_rgb(255, 220, 50); // warm yellow
-        const ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(255, 140, 0); // orange
+        // Highlight colours — theme-adaptive teal/lilac palette.
+        // Different hues for the active match (lilac/violet) vs other matches (teal)
+        // to make the focused hit immediately obvious.
+        let (match_bg, active_bg) = if ui.visuals().dark_mode {
+            (
+                egui::Color32::from_rgb(30, 115, 105),  // deep teal   – readable with light text
+                egui::Color32::from_rgb(95, 75, 165),   // deep violet – readable with light text
+            )
+        } else {
+            (
+                egui::Color32::from_rgb(140, 220, 210), // soft mint-teal   – readable with dark text
+                egui::Color32::from_rgb(185, 165, 240), // soft periwinkle  – readable with dark text
+            )
+        };
 
         // Collect intervals that overlap with this text span, converted to
         // byte offsets local to `text` (0-based from text start).
@@ -654,7 +665,7 @@ impl CommonMarkViewerInternal {
                 }
             }
             if let Some(slice) = text.get(*start..*end) {
-                let bg = if *is_active { ACTIVE_BG } else { MATCH_BG };
+                let bg = if *is_active { active_bg } else { match_bg };
                 ui.label(self.text_style.to_richtext(ui, slice).background_color(bg));
             }
             pos = *end;
