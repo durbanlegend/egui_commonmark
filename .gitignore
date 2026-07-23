@@ -1,2 +1,4 @@
 **/target
 egui_commonmark_macros/wip/
+egui_commonmark/examples/app.log
+egui_commonmark/examples/rs_stdin_history.json

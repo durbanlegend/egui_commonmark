@@ -443,6 +443,12 @@ pub struct CommonMarkCache {
 
     scroll: HashMap<egui::Id, ScrollableCache>,
     pub(self) has_installed_loaders: bool,
+
+    /// Byte ranges (in the rendered source string) where search matches occur.
+    /// Set by the application before each render via [`CommonMarkCache::set_search_ranges`].
+    search_ranges: Vec<std::ops::Range<usize>>,
+    /// The currently active (focused) search match; displayed with a more prominent highlight colour.
+    active_search_range: Option<std::ops::Range<usize>>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -457,6 +463,8 @@ impl Default for CommonMarkCache {
             scroll: Default::default(),
             scroll_to_id_target: None,
             has_installed_loaders: false,
+            search_ranges: Vec::new(),
+            active_search_range: None,
         }
     }
 }
@@ -580,6 +588,28 @@ impl CommonMarkCache {
     /// Raw access to link hooks
     pub fn link_hooks_mut(&mut self) -> &mut HashMap<String, bool> {
         &mut self.link_hooks
+    }
+
+    /// Set the byte ranges (in the source string passed to the viewer) that should be
+    /// highlighted as search matches. Ranges must be valid UTF-8 character boundaries.
+    pub fn set_search_ranges(&mut self, ranges: Vec<std::ops::Range<usize>>) {
+        self.search_ranges = ranges;
+    }
+
+    /// Set the active (focused) search match range, displayed more prominently.
+    /// Pass `None` to clear the active highlight.
+    pub fn set_active_search_range(&mut self, range: Option<std::ops::Range<usize>>) {
+        self.active_search_range = range;
+    }
+
+    /// Read the search ranges currently set for highlighting.
+    pub fn search_ranges(&self) -> &[std::ops::Range<usize>] {
+        &self.search_ranges
+    }
+
+    /// Read the active search match range.
+    pub fn active_search_range(&self) -> Option<&std::ops::Range<usize>> {
+        self.active_search_range.as_ref()
     }
 
     /// Set all link hooks to false

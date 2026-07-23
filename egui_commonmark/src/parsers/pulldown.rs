@@ -530,22 +530,22 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Event::Start(tag) => self.start_tag(ui, tag, cache, options),
             pulldown_cmark::Event::End(tag) => self.end_tag(ui, tag, cache, options, max_width),
             pulldown_cmark::Event::Text(text) => {
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
             }
             pulldown_cmark::Event::Code(text) => {
                 self.text_style.code = true;
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
                 self.text_style.code = false;
             }
             pulldown_cmark::Event::InlineHtml(text) => {
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
             }
 
             pulldown_cmark::Event::Html(text) => {
                 if options.html_fn.is_some() {
                     self.html_block.push_str(&text);
                 } else {
-                    self.event_text(text, ui);
+                    self.event_text(text, src_span, ui, cache);
                 }
             }
             pulldown_cmark::Event::FootnoteReference(footnote) => {
@@ -587,16 +587,82 @@ impl CommonMarkViewerInternal {
         }
     }
 
-    fn event_text(&mut self, text: CowStr, ui: &mut Ui) {
-        let rich_text = self.text_style.to_richtext(ui, &text);
+    fn event_text(
+        &mut self,
+        text: CowStr,
+        src_span: Range<usize>,
+        ui: &mut Ui,
+        cache: &mut CommonMarkCache,
+    ) {
         if let Some(image) = &mut self.image {
-            image.alt_text.push(rich_text);
+            image.alt_text.push(self.text_style.to_richtext(ui, &text));
         } else if let Some(block) = &mut self.code_block {
             block.content.push_str(&text);
         } else if let Some(link) = &mut self.link {
-            link.text.push(rich_text);
+            link.text.push(self.text_style.to_richtext(ui, &text));
         } else {
-            ui.label(rich_text);
+            self.render_body_text(ui, cache, &text, src_span);
+        }
+    }
+
+    /// Render a body-text segment, splitting it at search-match boundaries and
+    /// painting yellow (match) or orange (active match) backgrounds on the hits.
+    /// Falls back to a plain label when there are no overlapping search ranges.
+    fn render_body_text(
+        &self,
+        ui: &mut Ui,
+        cache: &CommonMarkCache,
+        text: &str,
+        src_span: Range<usize>,
+    ) {
+        // Highlight colours — legible in both light and dark themes.
+        const MATCH_BG: egui::Color32 = egui::Color32::from_rgb(255, 220, 50); // warm yellow
+        const ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(255, 140, 0); // orange
+
+        // Collect intervals that overlap with this text span, converted to
+        // byte offsets local to `text` (0-based from text start).
+        let intervals: Vec<(usize, usize, bool)> = {
+            let active = cache.active_search_range();
+            cache
+                .search_ranges()
+                .iter()
+                .filter(|r| r.start < src_span.end && r.end > src_span.start)
+                .map(|r| {
+                    let local_start = r.start.saturating_sub(src_span.start).min(text.len());
+                    let local_end = r.end.saturating_sub(src_span.start).min(text.len());
+                    let is_active =
+                        active.map_or(false, |ar| ar.start == r.start && ar.end == r.end);
+                    (local_start, local_end, is_active)
+                })
+                .filter(|(s, e, _)| s < e)
+                .collect()
+        };
+
+        if intervals.is_empty() {
+            ui.label(self.text_style.to_richtext(ui, text));
+            return;
+        }
+
+        // Render prefix / highlight / suffix segments in sequence.
+        // `item_spacing.x` is already 0 in the outer horizontal-wrap layout, so
+        // consecutive labels flow without gaps between them.
+        let mut pos = 0usize;
+        for (start, end, is_active) in &intervals {
+            if pos < *start {
+                if let Some(slice) = text.get(pos..*start) {
+                    ui.label(self.text_style.to_richtext(ui, slice));
+                }
+            }
+            if let Some(slice) = text.get(*start..*end) {
+                let bg = if *is_active { ACTIVE_BG } else { MATCH_BG };
+                ui.label(self.text_style.to_richtext(ui, slice).background_color(bg));
+            }
+            pos = *end;
+        }
+        if pos < text.len() {
+            if let Some(slice) = text.get(pos..) {
+                ui.label(self.text_style.to_richtext(ui, slice));
+            }
         }
     }
 
