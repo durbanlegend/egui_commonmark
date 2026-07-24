@@ -155,8 +155,26 @@ impl CommonMarkViewerInternal {
 
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position();
-                let is_element_end = matches!(e, pulldown_cmark::Event::End(_));
-                let should_add_split_point = self.list.is_inside_a_list() && is_element_end;
+                // Add a split point after every block-level element so that
+                // show_scrollable can skip invisible content for any markdown
+                // document, not just list-heavy ones.
+                let should_add_split_point = matches!(
+                    e,
+                    pulldown_cmark::Event::End(
+                        pulldown_cmark::TagEnd::Paragraph
+                            | pulldown_cmark::TagEnd::Heading { .. }
+                            | pulldown_cmark::TagEnd::CodeBlock
+                            | pulldown_cmark::TagEnd::BlockQuote(_)
+                            | pulldown_cmark::TagEnd::List(_)
+                            | pulldown_cmark::TagEnd::Item
+                            | pulldown_cmark::TagEnd::Table
+                            | pulldown_cmark::TagEnd::FootnoteDefinition
+                            | pulldown_cmark::TagEnd::DefinitionList
+                            | pulldown_cmark::TagEnd::DefinitionListTitle
+                            | pulldown_cmark::TagEnd::DefinitionListDefinition
+                            | pulldown_cmark::TagEnd::HtmlBlock
+                    )
+                );
 
                 if events.peek().is_none() {
                     self.line.should_end_newline_forced = false;
