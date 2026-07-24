@@ -443,6 +443,10 @@ pub struct CommonMarkCache {
 
     scroll: HashMap<egui::Id, ScrollableCache>,
     pub(self) has_installed_loaders: bool,
+    /// Keyboard / programmatic scroll delta accumulated between frames.
+    /// Applied inside the next `show_scrollable` call and then cleared.
+    /// Positive y = scroll toward the top; negative = toward the bottom.
+    pub pending_scroll_delta: egui::Vec2,
 
     /// Byte ranges (in the rendered source string) where search matches occur.
     /// Set by the application before each render via [`CommonMarkCache::set_search_ranges`].
@@ -463,6 +467,7 @@ impl Default for CommonMarkCache {
             scroll: Default::default(),
             scroll_to_id_target: None,
             has_installed_loaders: false,
+            pending_scroll_delta: egui::Vec2::ZERO,
             search_ranges: Vec::new(),
             active_search_range: None,
         }
@@ -610,6 +615,12 @@ impl CommonMarkCache {
     /// Read the active search match range.
     pub fn active_search_range(&self) -> Option<&std::ops::Range<usize>> {
         self.active_search_range.as_ref()
+    }
+
+    /// Accumulate a scroll delta for the next `show_scrollable` call.
+    /// Positive y scrolls toward the top; negative toward the bottom.
+    pub fn set_scroll_delta(&mut self, delta: egui::Vec2) {
+        self.pending_scroll_delta += delta;
     }
 
     /// Set all link hooks to false

@@ -155,6 +155,14 @@ impl CommonMarkViewerInternal {
 
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position();
+                // Record heading y-positions for the heading-scroll fast path.
+                if let (Some(sid), pulldown_cmark::Event::Start(
+                    pulldown_cmark::Tag::Heading { id: Some(id), .. }
+                )) = (split_points_id, &e) {
+                    scroll_cache(cache, &sid)
+                        .heading_y_positions
+                        .insert(id.to_string(), start_position.y);
+                }
                 // Add a split point after every block-level element so that
                 // show_scrollable can skip invisible content for any markdown
                 // document, not just list-heavy ones.
@@ -233,6 +241,14 @@ impl CommonMarkViewerInternal {
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    // Apply any pending keyboard/programmatic scroll delta.
+                    let delta = std::mem::replace(
+                        &mut cache.pending_scroll_delta,
+                        egui::Vec2::ZERO,
+                    );
+                    if delta != egui::Vec2::ZERO {
+                        ui.scroll_with_delta(delta);
+                    }
                     self.show(ui, cache, options, text, Some(source_id));
                 });
             // Prevent repopulating points twice at startup
@@ -249,6 +265,28 @@ impl CommonMarkViewerInternal {
 
         let num_rows = events.len();
 
+        // Resolve scroll_to_id_target via cached heading y-positions so that
+        // TOC navigation works even when the target heading is outside the
+        // currently visible viewport slice.
+        let pending_scroll_y: Option<f32> = {
+            let slug_owned = cache.scroll_to_id_target().map(|s| s.to_owned());
+            if let Some(ref slug) = slug_owned {
+                let sc = scroll_cache(cache, &source_id);
+                if let Some(&y) = sc.heading_y_positions.get(slug) {
+                    cache.scroll_to_id_target_mut().take(); // consumed
+                    Some(y)
+                } else {
+                    None // not yet known; keep target for the full-render path
+                }
+            } else {
+                None
+            }
+        };
+        let pending_delta = std::mem::replace(
+            &mut cache.pending_scroll_delta,
+            egui::Vec2::ZERO,
+        );
+
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             // Elements have different widths, so the scroll area cannot try to shrink to the
@@ -256,6 +294,15 @@ impl CommonMarkViewerInternal {
             // with different widths.
             .auto_shrink([false, true])
             .show_viewport(ui, |ui, viewport| {
+                // Apply heading jump and keyboard delta inside the scroll area.
+                if let Some(y) = pending_scroll_y {
+                    let r = egui::Rect::from_min_size(egui::pos2(0.0, y), egui::Vec2::ZERO);
+                    ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                }
+                if pending_delta != egui::Vec2::ZERO {
+                    ui.scroll_with_delta(pending_delta);
+                }
+
                 ui.set_height(page_size.y);
                 let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -312,6 +359,7 @@ impl CommonMarkViewerInternal {
             scroll_cache.available_size = available_size;
             scroll_cache.page_size = None;
             scroll_cache.split_points.clear();
+            scroll_cache.heading_y_positions.clear();
         }
     }
 
