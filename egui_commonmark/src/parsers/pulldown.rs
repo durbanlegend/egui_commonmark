@@ -163,10 +163,11 @@ impl CommonMarkViewerInternal {
                         .heading_y_positions
                         .insert(id.to_string(), start_position.y);
                 }
-                // Add a split point after every block-level element so that
-                // show_scrollable can skip invisible content for any markdown
-                // document, not just list-heavy ones.
-                let should_add_split_point = matches!(
+                // Only record split points at top-level block boundaries —
+                // never inside a list, definition list, or other stateful
+                // nesting.  Checked after process_event so the list depth
+                // reflects the state *after* the End event has been handled.
+                let is_block_end = matches!(
                     e,
                     pulldown_cmark::Event::End(
                         pulldown_cmark::TagEnd::Paragraph
@@ -186,6 +187,12 @@ impl CommonMarkViewerInternal {
                 }
 
                 self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
+
+                // Guard: after process_event the list levels have been updated.
+                // If we are still inside a list, any split point here would be
+                // unsafe (a fresh render slice would start with empty list state
+                // and panic in start_item).
+                let should_add_split_point = is_block_end && !self.list.is_inside_a_list();
 
                 if let Some(source_id) = split_points_id
                     && should_add_split_point
