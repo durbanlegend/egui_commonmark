@@ -174,12 +174,9 @@ impl CommonMarkViewerInternal {
                             | pulldown_cmark::TagEnd::CodeBlock
                             | pulldown_cmark::TagEnd::BlockQuote(_)
                             | pulldown_cmark::TagEnd::List(_)
-                            | pulldown_cmark::TagEnd::Item
                             | pulldown_cmark::TagEnd::Table
                             | pulldown_cmark::TagEnd::FootnoteDefinition
                             | pulldown_cmark::TagEnd::DefinitionList
-                            | pulldown_cmark::TagEnd::DefinitionListTitle
-                            | pulldown_cmark::TagEnd::DefinitionListDefinition
                             | pulldown_cmark::TagEnd::HtmlBlock
                     )
                 );
