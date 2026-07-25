@@ -164,14 +164,14 @@ impl CommonMarkViewerInternal {
             // are in virtual space (= scroll_offset and scroll_offset + visible_height),
             // so the split_point filters and allocate_space must use the same space.
             //
-            // heading_y_positions intentionally keeps screen-space y, because
-            // scroll_to_rect with the (y − viewport.min.y) adjustment needs it.
+            // heading_y_positions is also stored in virtual space (same normalisation)
+            // so that show_scrollable can compute an instant scroll_with_delta directly
+            // from the stored value without needing to know screen_top.
             let content_origin_y = ui.next_widget_position().y;
 
             while let Some((index, (e, src_span))) = events.next() {
-                let start_position = ui.next_widget_position(); // screen-space
+                let start_position = ui.next_widget_position(); // screen-space (normalised below)
                 // Record heading y-positions for the heading-scroll fast path.
-                // Stored in screen-space y (scroll_to_rect with y−viewport.min.y needs this).
                 if let (
                     Some(sid),
                     pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading {
@@ -179,10 +179,13 @@ impl CommonMarkViewerInternal {
                     }),
                 ) = (split_points_id, &e)
                 {
+                    // Stored as virtual (content-relative) y, same coordinate space as
+                    // split_points and viewport.  Used by show_scrollable to compute an
+                    // instant scroll_with_delta, so no screen_top offset is needed here.
                     scroll_cache(cache, &sid)
                         .heading_y_positions
-                        .insert(id.to_string(), start_position.y); // screen-space: intentional
-                    // eprintln!("Inserted into scroll_cache: id={}, start_position.y={}", id.to_string(), start_position.y);
+                        .insert(id.to_string(), start_position.y - content_origin_y);
+                    // eprintln!("Inserted into scroll_cache: id={}, virtual_y={}", id.to_string(), start_position.y - content_origin_y);
                 }
                 // Split points are only safe at stateless top-level boundaries.
                 // Paragraph, Heading and CodeBlock are provably safe: the renderer
@@ -345,30 +348,24 @@ impl CommonMarkViewerInternal {
             .auto_shrink([false, true])
             .show_viewport(ui, |ui, viewport| {
                 // Apply heading jump and keyboard delta inside the scroll area.
-                if let Some(y) = pending_scroll_y {
-                    // heading_y_positions stores the screen-space y recorded during the
-                    // full render at scroll_offset=0: y = screen_top + virtual_y_heading.
+                if let Some(virtual_y) = pending_scroll_y {
+                    // heading_y_positions now stores virtual (content-relative) y,
+                    // directly comparable to viewport.min.y (= current scroll offset).
                     //
-                    // scroll_to_rect computes the new scroll offset as:
-                    //   target = scroll_offset + (y_rect − min) − item_spacing − scroll_offset
-                    //          = y_rect − (screen_top − scroll_offset) − item_spacing − scroll_offset
-                    //          = y_rect − screen_top − item_spacing
-                    //   (where min = content_ui.min_rect().min.y = screen_top − scroll_offset)
+                    // We use scroll_with_delta for INSTANT positioning rather than
+                    // scroll_to_rect (which triggers egui's multi-frame smooth animation).
+                    // During animation, show_viewport is called at each intermediate scroll
+                    // position; the rendered window shifts to match, causing the "rug-pull"
+                    // effect where content jumps around while the animation plays.
                     //
-                    // We need target = virtual_y_heading − item_spacing, so:
-                    //   y_rect = virtual_y_heading + screen_top − scroll_offset... but since
-                    //   y (stored) = screen_top + virtual_y_heading, this simplifies to:
-                    //   y_rect = y − viewport.min.y    (viewport.min.y == current scroll_offset)
-                    //
-                    // Without this adjustment, scroll_to_rect adds the current scroll_offset
-                    // a second time, scrolling too far down by exactly the current offset.
-                    // The bug manifests as: TOC clicks work only from BOD; elsewhere they
-                    // always scroll to (target + current_scroll) instead of target.
-                    let r = egui::Rect::from_min_size(
-                        egui::pos2(0.0, y - viewport.min.y),
-                        egui::Vec2::ZERO,
-                    );
-                    ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                    // scroll_with_delta: new_offset = current_offset − delta
+                    //   → delta = current_offset − target_offset
+                    //           = viewport.min.y − virtual_y
+                    // Positive delta = scroll toward top; negative = toward bottom.
+                    let delta = viewport.min.y - virtual_y;
+                    if delta != 0.0 {
+                        ui.scroll_with_delta(egui::vec2(0.0, delta));
+                    }
                 }
                 if pending_delta != egui::Vec2::ZERO {
                     ui.scroll_with_delta(pending_delta);
@@ -382,21 +379,41 @@ impl CommonMarkViewerInternal {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let scroll_cache = scroll_cache(cache, &source_id);
 
-                    // finding the first element that's not in the viewport anymore
+                    // Rolling-segment rendering: expose content in a window of
+                    // [render_above, render_below] rather than just the tight viewport.
+                    //
+                    // Padding by one viewport-height above and below gives three benefits:
+                    //  1. The viewport is always filled even when images or other dynamic
+                    //     elements expand the layout after the initial measurement pass.
+                    //  2. Smooth scrolling: the rendered window shifts only when the user
+                    //     scrolls outside the pad zone, rather than on every frame.
+                    //  3. Window-resize reflows are absorbed: the available-size change
+                    //     invalidates the cache and triggers a fresh full render, but the
+                    //     larger pad prevents a blank flash during the transition.
+                    //
+                    // All positions are in virtual (content-relative) space (0 = top),
+                    // matching viewport.min/max.y from show_viewport exactly.
+                    let viewport_height = viewport.max.y - viewport.min.y;
+                    let render_above = (viewport.min.y - viewport_height).max(0.0);
+                    let render_below = viewport.max.y + viewport_height;
+
+                    // Last split point whose END is before render_above (inclusive).
+                    // Using .last() rather than .nth_back(N): the viewport_height pad
+                    // already provides the over-render buffer, so we need no extra margin.
                     let (first_event_index, _, first_end_position) = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, _, end_position)| end_position.y < viewport.min.y)
-                        .nth_back(1)
+                        .filter(|(_, _, end_position)| end_position.y < render_above)
+                        .last()
                         .copied()
                         .unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
 
-                    // finding the last element that's just outside the viewport
+                    // First split point whose START is past render_below.
                     let last_event_index = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, start_position, _)| start_position.y > viewport.max.y)
-                        .nth(1)
+                        .filter(|(_, start_position, _)| start_position.y > render_below)
+                        .next()
                         .map(|(index, _, _)| *index)
                         .unwrap_or(num_rows);
 
