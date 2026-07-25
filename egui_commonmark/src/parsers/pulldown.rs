@@ -317,7 +317,28 @@ impl CommonMarkViewerInternal {
             .show_viewport(ui, |ui, viewport| {
                 // Apply heading jump and keyboard delta inside the scroll area.
                 if let Some(y) = pending_scroll_y {
-                    let r = egui::Rect::from_min_size(egui::pos2(0.0, y), egui::Vec2::ZERO);
+                    // heading_y_positions stores the screen-space y recorded during the
+                    // full render at scroll_offset=0: y = screen_top + virtual_y_heading.
+                    //
+                    // scroll_to_rect computes the new scroll offset as:
+                    //   target = scroll_offset + (y_rect − min) − item_spacing − scroll_offset
+                    //          = y_rect − (screen_top − scroll_offset) − item_spacing − scroll_offset
+                    //          = y_rect − screen_top − item_spacing
+                    //   (where min = content_ui.min_rect().min.y = screen_top − scroll_offset)
+                    //
+                    // We need target = virtual_y_heading − item_spacing, so:
+                    //   y_rect = virtual_y_heading + screen_top − scroll_offset... but since
+                    //   y (stored) = screen_top + virtual_y_heading, this simplifies to:
+                    //   y_rect = y − viewport.min.y    (viewport.min.y == current scroll_offset)
+                    //
+                    // Without this adjustment, scroll_to_rect adds the current scroll_offset
+                    // a second time, scrolling too far down by exactly the current offset.
+                    // The bug manifests as: TOC clicks work only from BOD; elsewhere they
+                    // always scroll to (target + current_scroll) instead of target.
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(0.0, y - viewport.min.y),
+                        egui::Vec2::ZERO,
+                    );
                     ui.scroll_to_rect(r, Some(egui::Align::TOP));
                 }
                 if pending_delta != egui::Vec2::ZERO {
@@ -350,18 +371,16 @@ impl CommonMarkViewerInternal {
                         .map(|(index, _, _)| *index)
                         .unwrap_or(num_rows);
 
-                    eprintln!(
-                        "first_end_position=({},{})",
-                        first_end_position.x, first_end_position.y
-                    );
+                    // eprintln!(
+                    //     "first_end_position=({},{})",
+                    //     first_end_position.x, first_end_position.y
+                    // );
                     // Defensive clamp: allocate_space asserts non-negative size.
                     // Negative values should no longer occur after the scroll_offset(ZERO)
                     // fix above, but guard here to prevent panics from any future
                     // edge-case that re-introduces them.
-                    let safe_end = egui::pos2(
-                        first_end_position.x.max(0.0),
-                        first_end_position.y.max(0.0),
-                    );
+                    let safe_end =
+                        egui::pos2(first_end_position.x.max(0.0), first_end_position.y.max(0.0));
                     ui.allocate_space(safe_end.to_vec2());
 
                     // only rendering the elements that are inside the viewport
