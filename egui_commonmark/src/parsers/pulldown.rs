@@ -164,9 +164,9 @@ impl CommonMarkViewerInternal {
             // are in virtual space (= scroll_offset and scroll_offset + visible_height),
             // so the split_point filters and allocate_space must use the same space.
             //
-            // heading_y_positions is also stored in virtual space (same normalisation)
-            // so that show_scrollable can compute an instant scroll_with_delta directly
-            // from the stored value without needing to know screen_top.
+            // heading_y_positions is stored in screen-space y (NOT normalised).
+            // show_scrollable uses  pos2(0, y - viewport.min.y)  with scroll_to_rect,
+            // which correctly cancels the screen_top offset regardless of scroll position.
             let content_origin_y = ui.next_widget_position().y;
 
             while let Some((index, (e, src_span))) = events.next() {
@@ -179,13 +179,17 @@ impl CommonMarkViewerInternal {
                     }),
                 ) = (split_points_id, &e)
                 {
-                    // Stored as virtual (content-relative) y, same coordinate space as
-                    // split_points and viewport.  Used by show_scrollable to compute an
-                    // instant scroll_with_delta, so no screen_top offset is needed here.
+                    // Stored in screen-space y (not normalised).  The viewport-path
+                    // navigator uses  pos2(0, y - viewport.min.y)  with scroll_to_rect,
+                    // which correctly cancels the screen_top offset — see show_scrollable.
+                    // Use cursor.min.y (top of row) not next_widget_position().y
+                    // (which returns cursor.max.y for BOTTOM-aligned layouts).
+                    // scroll_to_cursor() in start_tag uses cursor.min.y in its
+                    // offset formula, so we must store the same coordinate.
                     scroll_cache(cache, &sid)
                         .heading_y_positions
-                        .insert(id.to_string(), start_position.y - content_origin_y);
-                    // eprintln!("Inserted into scroll_cache: id={}, virtual_y={}", id.to_string(), start_position.y - content_origin_y);
+                        .insert(id.to_string(), ui.cursor().min.y);
+                    // eprintln!("Inserted heading cursor.min.y: id={}, y={}", id.to_string(), ui.cursor().min.y);
                 }
                 // Split points are only safe at stateless top-level boundaries.
                 // Paragraph, Heading and CodeBlock are provably safe: the renderer
@@ -376,24 +380,26 @@ impl CommonMarkViewerInternal {
             .auto_shrink([false, true])
             .show_viewport(ui, |ui, viewport| {
                 // Apply heading jump and keyboard delta inside the scroll area.
-                if let Some(virtual_y) = pending_scroll_y {
-                    // heading_y_positions now stores virtual (content-relative) y,
-                    // directly comparable to viewport.min.y (= current scroll offset).
+                if let Some(y) = pending_scroll_y {
+                    // heading_y_positions stores screen-space y (recorded at scroll_offset=0).
                     //
-                    // We use scroll_with_delta for INSTANT positioning rather than
-                    // scroll_to_rect (which triggers egui's multi-frame smooth animation).
-                    // During animation, show_viewport is called at each intermediate scroll
-                    // position; the rendered window shifts to match, causing the "rug-pull"
-                    // effect where content jumps around while the animation plays.
+                    // scroll_to_rect formula (Align::TOP, center_factor=0):
+                    //   min  = content_ui.min_rect().min.y  = screen_top - current_scroll
+                    //   offset = y_rect - min
+                    //   delta  = offset - item_spacing - current_scroll
+                    //   target = current_scroll + delta = y_rect - screen_top - item_spacing
                     //
-                    // scroll_with_delta: new_offset = current_offset − delta
-                    //   → delta = current_offset − target_offset
-                    //           = viewport.min.y − virtual_y
-                    // Positive delta = scroll toward top; negative = toward bottom.
-                    let delta = viewport.min.y - virtual_y;
-                    if delta != 0.0 {
-                        ui.scroll_with_delta(egui::vec2(0.0, delta));
-                    }
+                    // We need target = virtual_y_heading - item_spacing, so:
+                    //   y_rect = virtual_y_heading + screen_top - current_scroll
+                    //          = (screen_space_y) - current_scroll
+                    //          = y - viewport.min.y
+                    //
+                    // This formula was previously confirmed working.
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(0.0, y - viewport.min.y),
+                        egui::Vec2::ZERO,
+                    );
+                    ui.scroll_to_rect(r, Some(egui::Align::TOP));
                 }
                 if pending_delta != egui::Vec2::ZERO {
                     ui.scroll_with_delta(pending_delta);
