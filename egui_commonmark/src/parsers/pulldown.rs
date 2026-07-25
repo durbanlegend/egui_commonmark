@@ -156,9 +156,13 @@ impl CommonMarkViewerInternal {
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position();
                 // Record heading y-positions for the heading-scroll fast path.
-                if let (Some(sid), pulldown_cmark::Event::Start(
-                    pulldown_cmark::Tag::Heading { id: Some(id), .. }
-                )) = (split_points_id, &e) {
+                if let (
+                    Some(sid),
+                    pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading {
+                        id: Some(id), ..
+                    }),
+                ) = (split_points_id, &e)
+                {
                     scroll_cache(cache, &sid)
                         .heading_y_positions
                         .insert(id.to_string(), start_position.y);
@@ -243,10 +247,8 @@ impl CommonMarkViewerInternal {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     // Apply any pending keyboard/programmatic scroll delta.
-                    let delta = std::mem::replace(
-                        &mut cache.pending_scroll_delta,
-                        egui::Vec2::ZERO,
-                    );
+                    let delta =
+                        std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
                     if delta != egui::Vec2::ZERO {
                         ui.scroll_with_delta(delta);
                     }
@@ -283,10 +285,7 @@ impl CommonMarkViewerInternal {
                 None
             }
         };
-        let pending_delta = std::mem::replace(
-            &mut cache.pending_scroll_delta,
-            egui::Vec2::ZERO,
-        );
+        let pending_delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
 
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
@@ -687,8 +686,8 @@ impl CommonMarkViewerInternal {
         // to make the focused hit immediately obvious.
         let (match_bg, active_bg) = if ui.visuals().dark_mode {
             (
-                egui::Color32::from_rgb(30, 115, 105),  // deep teal   – readable with light text
-                egui::Color32::from_rgb(95, 75, 165),   // deep violet – readable with light text
+                egui::Color32::from_rgb(30, 115, 105), // deep teal   – readable with light text
+                egui::Color32::from_rgb(95, 75, 165),  // deep violet – readable with light text
             )
         } else {
             (
