@@ -166,6 +166,7 @@ impl CommonMarkViewerInternal {
                     scroll_cache(cache, &sid)
                         .heading_y_positions
                         .insert(id.to_string(), start_position.y);
+                    // eprintln!("Inserted into scroll_cache: id={}, start_position.y={}", id.to_string(), start_position.y);
                 }
                 // Split points are only safe at stateless top-level boundaries.
                 // Paragraph, Heading and CodeBlock are provably safe: the renderer
@@ -210,6 +211,10 @@ impl CommonMarkViewerInternal {
                         scroll_cache
                             .split_points
                             .push((index, start_position, end_position));
+                        // eprintln!(
+                        //     "Pushed split_point: index={index}, start=({},{}, end=({},{})",
+                        //     start_position.x, start_position.y, end_position.x, end_position.y
+                        // )
                     }
                 }
 
@@ -240,10 +245,26 @@ impl CommonMarkViewerInternal {
     ) {
         let available_size = ui.available_size();
         let scroll_id = source_id.with("_scroll_area");
+        // eprintln!("scroll_id={scroll_id:?}, available_size={available_size}");
 
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
+            // Force scroll to top so that ui.next_widget_position() records positive
+            // screen-space y values in split_points and heading_y_positions.
+            //
+            // Without this, if the cache is cleared while the ScrollArea remembers a
+            // large scroll offset (e.g. after reloading from EOD), the content UI
+            // starts at `screen_top - scroll_offset` which is deeply negative.
+            // Those negative positions end up in split_points, and the subsequent
+            // viewport render calls ui.allocate_space() with a negative size, which
+            // triggers the debug assertion in placer::next_space and panics.
+            //
+            // egui 0.35 guarantees that scroll_offset() overrides persisted state
+            // (scroll_area.rs line 742: state.offset.y = offset_y.unwrap_or(...)),
+            // so this reliably resets the scroll for the layout-measurement pass.
+            // The viewport render on the next frame then begins at offset 0.
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
+                .scroll_offset(egui::Vec2::ZERO)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     // Apply any pending keyboard/programmatic scroll delta.
@@ -329,7 +350,19 @@ impl CommonMarkViewerInternal {
                         .map(|(index, _, _)| *index)
                         .unwrap_or(num_rows);
 
-                    ui.allocate_space(first_end_position.to_vec2());
+                    eprintln!(
+                        "first_end_position=({},{})",
+                        first_end_position.x, first_end_position.y
+                    );
+                    // Defensive clamp: allocate_space asserts non-negative size.
+                    // Negative values should no longer occur after the scroll_offset(ZERO)
+                    // fix above, but guard here to prevent panics from any future
+                    // edge-case that re-introduces them.
+                    let safe_end = egui::pos2(
+                        first_end_position.x.max(0.0),
+                        first_end_position.y.max(0.0),
+                    );
+                    ui.allocate_space(safe_end.to_vec2());
 
                     // only rendering the elements that are inside the viewport
                     let mut events = events
