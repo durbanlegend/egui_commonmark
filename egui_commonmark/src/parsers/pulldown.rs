@@ -153,9 +153,25 @@ impl CommonMarkViewerInternal {
             .enumerate()
             .peekable();
 
+            // Capture the y-coordinate of the content's top in screen space.
+            // ui.next_widget_position() returns screen-space coordinates; at scroll_offset=0
+            // (guaranteed by the .scroll_offset(ZERO) on the full-render ScrollArea) this
+            // equals screen_top — the panel's y-offset.  By subtracting it from every
+            // split_point position and from page_size.y, we normalise them to virtual
+            // (content-relative) coordinates where 0 = top of document.
+            //
+            // This matters because viewport.min.y and viewport.max.y from show_viewport
+            // are in virtual space (= scroll_offset and scroll_offset + visible_height),
+            // so the split_point filters and allocate_space must use the same space.
+            //
+            // heading_y_positions intentionally keeps screen-space y, because
+            // scroll_to_rect with the (y − viewport.min.y) adjustment needs it.
+            let content_origin_y = ui.next_widget_position().y;
+
             while let Some((index, (e, src_span))) = events.next() {
-                let start_position = ui.next_widget_position();
+                let start_position = ui.next_widget_position(); // screen-space
                 // Record heading y-positions for the heading-scroll fast path.
+                // Stored in screen-space y (scroll_to_rect with y−viewport.min.y needs this).
                 if let (
                     Some(sid),
                     pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading {
@@ -165,7 +181,7 @@ impl CommonMarkViewerInternal {
                 {
                     scroll_cache(cache, &sid)
                         .heading_y_positions
-                        .insert(id.to_string(), start_position.y);
+                        .insert(id.to_string(), start_position.y); // screen-space: intentional
                     // eprintln!("Inserted into scroll_cache: id={}, start_position.y={}", id.to_string(), start_position.y);
                 }
                 // Split points are only safe at stateless top-level boundaries.
@@ -200,7 +216,7 @@ impl CommonMarkViewerInternal {
                     && should_add_split_point
                 {
                     let scroll_cache = scroll_cache(cache, &source_id);
-                    let end_position = ui.next_widget_position();
+                    let end_position = ui.next_widget_position(); // screen-space
 
                     let split_point_exists = scroll_cache
                         .split_points
@@ -208,12 +224,20 @@ impl CommonMarkViewerInternal {
                         .any(|(i, _, _)| *i == index);
 
                     if !split_point_exists {
-                        scroll_cache
-                            .split_points
-                            .push((index, start_position, end_position));
+                        // Normalise to virtual (content-relative) coordinates so that
+                        // the positions are directly comparable to viewport.min/max.y.
+                        let vstart = egui::pos2(
+                            start_position.x,
+                            start_position.y - content_origin_y,
+                        );
+                        let vend = egui::pos2(
+                            end_position.x,
+                            end_position.y - content_origin_y,
+                        );
+                        scroll_cache.split_points.push((index, vstart, vend));
                         // eprintln!(
-                        //     "Pushed split_point: index={index}, start=({},{}, end=({},{})",
-                        //     start_position.x, start_position.y, end_position.x, end_position.y
+                        //     "Pushed split_point: index={index}, vstart=({},{}) vend=({},{})",
+                        //     vstart.x, vstart.y, vend.x, vend.y
                         // )
                     }
                 }
@@ -227,8 +251,13 @@ impl CommonMarkViewerInternal {
             *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
 
             if let Some(source_id) = split_points_id {
+                // Normalise page_size.y to virtual height (total content height, 0-based).
+                // ui.set_height(page_size.y) in show_scrollable uses this to set the
+                // virtual document height for the scroll area, so it must not include
+                // the screen_top (content_origin_y) offset.
+                let final_y = ui.next_widget_position().y;
                 scroll_cache(cache, &source_id).page_size =
-                    Some(ui.next_widget_position().to_vec2());
+                    Some(egui::vec2(max_width, final_y - content_origin_y));
             }
         });
 
