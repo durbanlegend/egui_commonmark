@@ -279,6 +279,34 @@ impl CommonMarkViewerInternal {
         let scroll_id = source_id.with("_scroll_area");
         // eprintln!("scroll_id={scroll_id:?}, available_size={available_size}");
 
+        if !options.use_viewport_cache {
+            // ── Simple full-document render path ───────────────────────────────────────
+            // Render the entire document on every frame; egui clips what is off-screen.
+            // This gives flawless scroll accuracy and is fast enough for most documents.
+            // Stale viewport-cache state from a previous cached run is cleared so that
+            // re-enabling the cache later triggers a fresh full render.
+            {
+                let sc = scroll_cache(cache, &source_id);
+                sc.page_size = None;
+                sc.split_points.clear();
+                sc.heading_y_positions.clear();
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let delta =
+                        std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
+                    if delta != egui::Vec2::ZERO {
+                        ui.scroll_with_delta(delta);
+                    }
+                    // Passing None disables split-point recording; TOC navigation works
+                    // via the original ui.scroll_to_cursor() path in start_tag().
+                    self.show(ui, cache, options, text, None);
+                });
+            return;
+        }
+
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
             // Force scroll to top so that ui.next_widget_position() records positive
             // screen-space y values in split_points and heading_y_positions.

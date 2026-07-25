@@ -36,6 +36,11 @@ pub struct CommonMarkOptions<'f> {
     /// Whether to enable scrolling to headings by their ID.
     /// To give a heading an ID, use the syntax `# Heading {#myheadingid}`. Then links to `#myheadingid` e.g. `[click me!](#myheadingid)` will scroll to that heading.
     pub enable_scroll_to_heading: bool,
+    /// When `true`, `show_scrollable` uses a viewport-culling cache for speed on
+    /// very large documents.  When `false` (the default), the entire document is
+    /// rendered every frame; egui clips what is off-screen.  The simple path gives
+    /// perfect scroll accuracy and is fast enough for most documents.
+    pub use_viewport_cache: bool,
 }
 
 impl std::fmt::Debug for CommonMarkOptions<'_> {
@@ -58,6 +63,7 @@ impl std::fmt::Debug for CommonMarkOptions<'_> {
             )
             .field("alerts", &self.alerts)
             .field("mutable", &self.mutable)
+            .field("use_viewport_cache", &self.use_viewport_cache)
             .finish()
     }
 }
@@ -80,6 +86,7 @@ impl Default for CommonMarkOptions<'_> {
             math_fn: None,
             html_fn: None,
             enable_scroll_to_heading: false,
+            use_viewport_cache: false,
         }
     }
 }

@@ -232,6 +232,16 @@ impl<'f> CommonMarkViewer<'f> {
         self
     }
 
+    /// When `true`, `show_scrollable` uses a viewport-culling cache to speed up
+    /// rendering of very large documents.  When `false` (the default), the whole
+    /// document is rendered each frame with egui clipping the off-screen parts,
+    /// giving perfect scroll accuracy.  The toggle is intended for documents large
+    /// enough that full-frame layout is slow (typically > 200 KB).
+    pub fn viewport_cache(mut self, use_cache: bool) -> Self {
+        self.options.use_viewport_cache = use_cache;
+        self
+    }
+
     /// Shows rendered markdown
     pub fn show(
         self,
