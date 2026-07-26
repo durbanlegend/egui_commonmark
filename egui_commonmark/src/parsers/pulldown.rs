@@ -155,14 +155,33 @@ impl CommonMarkViewerInternal {
 
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position();
-                let is_element_end = matches!(e, pulldown_cmark::Event::End(_));
-                let should_add_split_point = self.list.is_inside_a_list() && is_element_end;
+                // Split points are only safe at stateless top-level boundaries.
+                // Paragraph, Heading and CodeBlock are provably safe: the renderer
+                // has no pending state after them.  End(List), End(BlockQuote),
+                // End(Table) etc. are excluded even at the top level because the
+                // list-level stack is empty in a fresh renderer, so any Start(List)
+                // consumed by an inner wrapper (item_list_wrapping / blockquote /
+                // table) before the outer loop sees Start(Item) would leave the
+                // stack empty and trigger the unreachable!() in start_item.
+                // The guard !is_inside_a_list() prevents recording a split point
+                // while inside a list (e.g. End(Paragraph) inside a list item).
+                let is_safe_block_end = !self.list.is_inside_a_list()
+                    && matches!(
+                        e,
+                        pulldown_cmark::Event::End(
+                            pulldown_cmark::TagEnd::Paragraph
+                                | pulldown_cmark::TagEnd::Heading { .. }
+                                | pulldown_cmark::TagEnd::CodeBlock
+                        )
+                    );
 
                 if events.peek().is_none() {
                     self.line.should_end_newline_forced = false;
                 }
 
                 self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
+
+                let should_add_split_point = is_safe_block_end;
 
                 if let Some(source_id) = split_points_id
                     && should_add_split_point
@@ -615,9 +634,20 @@ impl CommonMarkViewerInternal {
         text: &str,
         src_span: Range<usize>,
     ) {
-        // Highlight colours — legible in both light and dark themes.
-        const MATCH_BG: egui::Color32 = egui::Color32::from_rgb(255, 220, 50); // warm yellow
-        const ACTIVE_BG: egui::Color32 = egui::Color32::from_rgb(255, 140, 0); // orange
+        // Highlight colours — theme-adaptive teal/lilac palette.
+        // Different hues for the active match (lilac/violet) vs other matches (teal)
+        // to make the focused hit immediately obvious.
+        let (match_bg, active_bg) = if ui.visuals().dark_mode {
+            (
+                egui::Color32::from_rgb(30, 115, 105), // deep teal   – readable with light text
+                egui::Color32::from_rgb(95, 75, 165),  // deep violet – readable with light text
+            )
+        } else {
+            (
+                egui::Color32::from_rgb(140, 220, 210), // soft mint-teal   – readable with dark text
+                egui::Color32::from_rgb(185, 165, 240), // soft periwinkle  – readable with dark text
+            )
+        };
 
         // Collect intervals that overlap with this text span, converted to
         // byte offsets local to `text` (0-based from text start).
@@ -654,7 +684,7 @@ impl CommonMarkViewerInternal {
                 }
             }
             if let Some(slice) = text.get(*start..*end) {
-                let bg = if *is_active { ACTIVE_BG } else { MATCH_BG };
+                let bg = if *is_active { active_bg } else { match_bg };
                 ui.label(self.text_style.to_richtext(ui, slice).background_color(bg));
             }
             pos = *end;
