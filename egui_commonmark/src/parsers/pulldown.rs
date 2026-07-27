@@ -625,7 +625,7 @@ impl CommonMarkViewerInternal {
     }
 
     /// Render a body-text segment, splitting it at search-match boundaries and
-    /// painting yellow (match) or orange (active match) backgrounds on the hits.
+    /// painting teal (match) or violet (active match) backgrounds on the hits.
     /// Falls back to a plain label when there are no overlapping search ranges.
     fn render_body_text(
         &self,

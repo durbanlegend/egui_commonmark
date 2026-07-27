@@ -116,7 +116,7 @@ pub fn code_block<'t>(
         epaint::RectShape::new(
             frame_rect,
             ui.style().noninteractive().corner_radius,
-            ui.visuals().extreme_bg_color,
+            ui.visuals().faint_bg_color,
             ui.visuals().widgets.noninteractive.bg_stroke,
             egui::StrokeKind::Outside,
         ),
