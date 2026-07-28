@@ -130,6 +130,10 @@ fn main() -> eframe::Result {
                         content: include_str!("markdown/tables.md").to_owned(),
                     },
                     Page {
+                        name: "Wide Tables".to_owned(),
+                        content: include_str!("markdown/wide_table.md").to_owned(),
+                    },
+                    Page {
                         name: "Embedded Image".to_owned(),
                         content: include_str!("markdown/embedded_image.md").to_owned(),
                     },
