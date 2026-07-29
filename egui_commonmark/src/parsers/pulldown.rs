@@ -482,6 +482,16 @@ impl CommonMarkViewerInternal {
         if self.is_table {
             self.line.try_insert_start(ui);
 
+            // Tables are block-level elements and must always start on their own
+            // row. `try_insert_start` emits a `\n` label which has ~zero width
+            // and therefore never triggers a row-wrap on its own. Consume any
+            // remaining horizontal space so the layout wraps before the table.
+            let remaining = ui.available_width();
+            if remaining < max_width - 1.0 {
+                // ui.allocate_space(egui::vec2(remaining, 0.0));
+                ui.label("\n\n");
+            }
+
             let id = ui.id().with("_table").with(self.curr_table);
             self.curr_table += 1;
 
@@ -544,6 +554,7 @@ impl CommonMarkViewerInternal {
             }
 
             self.line.try_insert_end(ui);
+            ui.label("\n");
         }
     }
 
