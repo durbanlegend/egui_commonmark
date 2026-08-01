@@ -84,6 +84,19 @@ pub struct CommonMarkViewerInternal {
     is_blockquote: bool,
     checkbox_events: Vec<CheckboxClickEvent>,
     deferred_scroll_to_heading: Option<String>,
+
+    // ── Viewport-cache state ──────────────────────────────────────────────────
+    /// Source id of the active scrollable viewer; set by show_scrollable so that
+    /// end_tag can access the right ScrollableCache for image drift detection.
+    scroll_source_id: Option<egui::Id>,
+    /// True only during the initial full-render pass (split-point recording).
+    /// False during viewport renders; controls whether end_tag records or checks
+    /// image heights.
+    recording_split_points: bool,
+    /// Set by end_tag when an image renders at a different height than the value
+    /// stored during the last full render.  Checked after show_viewport to decide
+    /// whether to invalidate the split-point cache.
+    pub(crate) layout_drift: bool,
 }
 
 pub(crate) struct CheckboxClickEvent {
@@ -108,6 +121,9 @@ impl CommonMarkViewerInternal {
             is_blockquote: false,
             checkbox_events: Vec::new(),
             deferred_scroll_to_heading: None,
+            scroll_source_id: None,
+            recording_split_points: false,
+            layout_drift: false,
         }
     }
 }
@@ -137,6 +153,7 @@ impl CommonMarkViewerInternal {
         text: &str,
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
+        self.recording_split_points = split_points_id.is_some();
         let max_width = options.max_width(ui);
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -188,8 +205,8 @@ impl CommonMarkViewerInternal {
                     // offset formula, so we must store the same coordinate.
                     scroll_cache(cache, &sid)
                         .heading_y_positions
-                        .insert(id.to_string(), ui.cursor().min.y);
-                    // eprintln!("Inserted heading cursor.min.y: id={}, y={}", id.to_string(), ui.cursor().min.y);
+                        .insert(id.to_string(), ui.cursor().min.y - content_origin_y);
+                    // eprintln!("Inserted heading cursor.min.y (virtual): id={}, y={}", id.to_string(), ui.cursor().min.y - content_origin_y);
                 }
                 // Split points are only safe at stateless top-level boundaries.
                 // Paragraph, Heading and CodeBlock are provably safe: the renderer
@@ -263,6 +280,7 @@ impl CommonMarkViewerInternal {
             }
         });
 
+        self.recording_split_points = false;
         (re, std::mem::take(&mut self.checkbox_events))
     }
 
@@ -278,6 +296,11 @@ impl CommonMarkViewerInternal {
         let scroll_id = source_id.with("_scroll_area");
         // eprintln!("scroll_id={scroll_id:?}, available_size={available_size}");
 
+        // Set source_id for the whole call so that end_tag can access the right
+        // ScrollableCache when recording or checking image heights.
+        self.scroll_source_id = Some(source_id);
+        self.layout_drift = false;
+
         if !options.use_viewport_cache {
             // ── Simple full-document render path ───────────────────────────────────────
             // Render the entire document on every frame; egui clips what is off-screen.
@@ -289,6 +312,7 @@ impl CommonMarkViewerInternal {
                 sc.page_size = None;
                 sc.split_points.clear();
                 sc.heading_y_positions.clear();
+                sc.image_heights.clear();
             }
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
@@ -307,23 +331,15 @@ impl CommonMarkViewerInternal {
         }
 
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
-            // Force scroll to top so that ui.next_widget_position() records positive
-            // screen-space y values in split_points and heading_y_positions.
-            //
-            // Without this, if the cache is cleared while the ScrollArea remembers a
-            // large scroll offset (e.g. after reloading from EOD), the content UI
-            // starts at `screen_top - scroll_offset` which is deeply negative.
-            // Those negative positions end up in split_points, and the subsequent
-            // viewport render calls ui.allocate_space() with a negative size, which
-            // triggers the debug assertion in placer::next_space and panics.
-            //
-            // egui 0.35 guarantees that scroll_offset() overrides persisted state
-            // (scroll_area.rs line 742: state.offset.y = offset_y.unwrap_or(...)),
-            // so this reliably resets the scroll for the layout-measurement pass.
-            // The viewport render on the next frame then begins at offset 0.
+            // Full-render pass: render the entire document to measure heights and
+            // populate split_points and heading_y_positions.
+            // We no longer force scroll_offset(ZERO) here: split_points store
+            // virtual (content-relative) coordinates via the content_origin_y
+            // normalisation in show(), so they are valid at any scroll position.
+            // This also means cache invalidation (e.g. from image drift) does NOT
+            // jump the user back to the top of the document.
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
-                .scroll_offset(egui::Vec2::ZERO)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     // Apply any pending keyboard/programmatic scroll delta.
@@ -376,22 +392,20 @@ impl CommonMarkViewerInternal {
             .show_viewport(ui, |ui, viewport| {
                 // Apply heading jump and keyboard delta inside the scroll area.
                 if let Some(y) = pending_scroll_y {
-                    // heading_y_positions stores screen-space y (recorded at scroll_offset=0).
+                    // heading_y_positions now stores virtual y (content-relative, 0 = top).
                     //
-                    // scroll_to_rect formula (Align::TOP, center_factor=0):
-                    //   min  = content_ui.min_rect().min.y  = screen_top - current_scroll
-                    //   offset = y_rect - min
-                    //   delta  = offset - item_spacing - current_scroll
-                    //   target = current_scroll + delta = y_rect - screen_top - item_spacing
+                    // Inside show_viewport, ui.next_widget_position().y = screen_top - current_scroll
+                    // (the screen position where virtual y=0 would appear).
                     //
-                    // We need target = virtual_y_heading - item_spacing, so:
-                    //   y_rect = virtual_y_heading + screen_top - current_scroll
-                    //          = (screen_space_y) - current_scroll
-                    //          = y - viewport.min.y
+                    // scroll_to_rect with Align::TOP scrolls so that rect.y appears at screen_top.
+                    // desired_scroll = rect.y - screen_top
+                    //                = (screen_top - current_scroll + y) - screen_top
+                    //                = y - current_scroll   →  new scroll = y  ✓
                     //
-                    // This formula was previously confirmed working.
+                    // This formula works regardless of the scroll offset used during the
+                    // full render, because heading y is now stored as a virtual coordinate.
                     let r = egui::Rect::from_min_size(
-                        egui::pos2(0.0, y - viewport.min.y),
+                        egui::pos2(0.0, ui.next_widget_position().y + y),
                         egui::Vec2::ZERO,
                     );
                     ui.scroll_to_rect(r, Some(egui::Align::TOP));
@@ -446,17 +460,14 @@ impl CommonMarkViewerInternal {
                         .map(|(index, _, _)| *index)
                         .unwrap_or(num_rows);
 
-                    // eprintln!(
-                    //     "first_end_position=({},{})",
-                    //     first_end_position.x, first_end_position.y
-                    // );
-                    // Defensive clamp: allocate_space asserts non-negative size.
-                    // Negative values should no longer occur after the scroll_offset(ZERO)
-                    // fix above, but guard here to prevent panics from any future
-                    // edge-case that re-introduces them.
-                    let safe_end =
-                        egui::pos2(first_end_position.x.max(0.0), first_end_position.y.max(0.0));
-                    ui.allocate_space(safe_end.to_vec2());
+                    // Skip over all content above the render window by allocating a full-width
+                    // block of exactly skip_height pixels.  Using max_width (not the stored
+                    // first_end_position.x) is critical: in a wrap layout, a narrow allocation
+                    // leaves the cursor mid-row so the first visible block is placed at the
+                    // wrong x.  A full-width allocation guarantees the cursor wraps cleanly to
+                    // the start of the next row.
+                    let skip_height = first_end_position.y.max(0.0);
+                    ui.allocate_space(egui::vec2(max_width, skip_height));
 
                     // only rendering the elements that are inside the viewport
                     let mut events = events
@@ -480,13 +491,18 @@ impl CommonMarkViewerInternal {
                 });
             });
 
-        // Forcing full re-render to repopulate split points for the new size
+        // Invalidate the split-point cache when the available size changes (e.g. window
+        // resize) OR when image drift was detected during this viewport render (a remote
+        // image loaded after the initial measurement pass, changing the layout height).
+        // Because scroll_offset(ZERO) has been removed from the full-render path, the
+        // re-render will happen at the current scroll position — no flash to the top.
         let scroll_cache = scroll_cache(cache, &source_id);
-        if available_size != scroll_cache.available_size {
+        if available_size != scroll_cache.available_size || self.layout_drift {
             scroll_cache.available_size = available_size;
             scroll_cache.page_size = None;
             scroll_cache.split_points.clear();
             scroll_cache.heading_y_positions.clear();
+            scroll_cache.image_heights.clear();
         }
     }
 
@@ -1080,7 +1096,23 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Image => {
                 if let Some(image) = self.image.take() {
-                    image.end(ui, options);
+                    let uri = image.uri.clone();
+                    let height = image.end(ui, options);
+                    // Track image heights to detect layout drift caused by remote images
+                    // loading after the initial full-render measurement pass.
+                    if let Some(source_id) = self.scroll_source_id {
+                        let sc = scroll_cache(cache, &source_id);
+                        if self.recording_split_points {
+                            // Full render: record the measured height as the baseline.
+                            sc.image_heights.insert(uri, height);
+                        } else if let Some(&expected_h) = sc.image_heights.get(&uri) {
+                            // Viewport render: if the image now renders taller (loaded since
+                            // the last full render), flag a drift so the cache is refreshed.
+                            if (height - expected_h).abs() > 2.0 {
+                                self.layout_drift = true;
+                            }
+                        }
+                    }
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {

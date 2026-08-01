@@ -270,12 +270,15 @@ impl Image {
         }
     }
 
-    pub fn end(self, ui: &mut Ui, options: &CommonMarkOptions) {
+    /// Renders the image and returns its rendered height in points.
+    pub fn end(self, ui: &mut Ui, options: &CommonMarkOptions) -> f32 {
         let response = ui.add(
             egui::Image::from_uri(&self.uri)
                 .fit_to_original_size(1.0)
                 .max_width(options.max_width(ui)),
         );
+
+        let height = response.rect.height();
 
         if !self.alt_text.is_empty() && options.show_alt_text_on_hover {
             response.on_hover_ui_at_pointer(|ui| {
@@ -284,6 +287,8 @@ impl Image {
                 }
             });
         }
+
+        height
     }
 }
 

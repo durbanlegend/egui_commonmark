@@ -9,9 +9,13 @@ pub struct ScrollableCache {
     pub available_size: Vec2,
     pub page_size: Option<Vec2>,
     pub split_points: Vec<(usize, Pos2, Pos2)>,
-    /// Heading id -> y-position in content space, populated during the first
-    /// full render.  Used by the viewport path to jump to headings directly.
+    /// Heading id -> virtual y (content-relative, 0 = top of document).
+    /// Populated during the full render; used by the viewport path to jump to headings.
     pub heading_y_positions: HashMap<String, f32>,
+    /// Image URI -> rendered height measured during the last full render.
+    /// Compared on every viewport render to detect layout drift caused by
+    /// remote images loading after the initial measurement pass.
+    pub image_heights: HashMap<String, f32>,
 }
 
 pub type EventIteratorItem<'e> = (usize, (pulldown_cmark::Event<'e>, Range<usize>));
