@@ -233,14 +233,9 @@ impl CommonMarkViewerInternal {
                     if !split_point_exists {
                         // Normalise to virtual (content-relative) coordinates so that
                         // the positions are directly comparable to viewport.min/max.y.
-                        let vstart = egui::pos2(
-                            start_position.x,
-                            start_position.y - content_origin_y,
-                        );
-                        let vend = egui::pos2(
-                            end_position.x,
-                            end_position.y - content_origin_y,
-                        );
+                        let vstart =
+                            egui::pos2(start_position.x, start_position.y - content_origin_y);
+                        let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
                         scroll_cache.split_points.push((index, vstart, vend));
                         // eprintln!(
                         //     "Pushed split_point: index={index}, vstart=({},{}) vend=({},{})",
@@ -660,6 +655,9 @@ impl CommonMarkViewerInternal {
     ) {
         if self.is_table {
             self.line.try_insert_start(ui);
+            if ui.available_width() < max_width - 1.0 {
+                ui.label("\n\n");
+            }
 
             let id = ui.id().with("_table").with(self.curr_table);
             self.curr_table += 1;
@@ -667,43 +665,54 @@ impl CommonMarkViewerInternal {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 let Table { header, rows } = parse_table(events);
 
-                egui::Grid::new(id).striped(true).show(ui, |ui| {
-                    for col in header {
-                        ui.horizontal(|ui| {
-                            for (e, src_span) in col {
-                                let tmp_start =
-                                    std::mem::replace(&mut self.line.should_start_newline, false);
-                                let tmp_end =
-                                    std::mem::replace(&mut self.line.should_end_newline, false);
-                                self.event(ui, e, src_span, cache, options, max_width);
-                                self.line.should_start_newline = tmp_start;
-                                self.line.should_end_newline = tmp_end;
+                ui.spacing_mut().scroll.content_margin.bottom = ui.spacing().scroll.bar_width as i8;
+                egui::ScrollArea::horizontal()
+                    .id_salt(id.with("_hscroll"))
+                    .show(ui, |ui| {
+                        egui::Grid::new(id).striped(true).show(ui, |ui| {
+                            for col in header {
+                                ui.horizontal(|ui| {
+                                    for (e, src_span) in col {
+                                        let tmp_start = std::mem::replace(
+                                            &mut self.line.should_start_newline,
+                                            false,
+                                        );
+                                        let tmp_end = std::mem::replace(
+                                            &mut self.line.should_end_newline,
+                                            false,
+                                        );
+                                        self.event(ui, e, src_span, cache, options, max_width);
+                                        self.line.should_start_newline = tmp_start;
+                                        self.line.should_end_newline = tmp_end;
+                                    }
+                                });
+                            }
+
+                            ui.end_row();
+
+                            for row in rows {
+                                for col in row {
+                                    ui.horizontal(|ui| {
+                                        for (e, src_span) in col {
+                                            let tmp_start = std::mem::replace(
+                                                &mut self.line.should_start_newline,
+                                                false,
+                                            );
+                                            let tmp_end = std::mem::replace(
+                                                &mut self.line.should_end_newline,
+                                                false,
+                                            );
+                                            self.event(ui, e, src_span, cache, options, max_width);
+                                            self.line.should_start_newline = tmp_start;
+                                            self.line.should_end_newline = tmp_end;
+                                        }
+                                    });
+                                }
+
+                                ui.end_row();
                             }
                         });
-                    }
-
-                    ui.end_row();
-
-                    for row in rows {
-                        for col in row {
-                            ui.horizontal(|ui| {
-                                for (e, src_span) in col {
-                                    let tmp_start = std::mem::replace(
-                                        &mut self.line.should_start_newline,
-                                        false,
-                                    );
-                                    let tmp_end =
-                                        std::mem::replace(&mut self.line.should_end_newline, false);
-                                    self.event(ui, e, src_span, cache, options, max_width);
-                                    self.line.should_start_newline = tmp_start;
-                                    self.line.should_end_newline = tmp_end;
-                                }
-                            });
-                        }
-
-                        ui.end_row();
-                    }
-                });
+                    });
             });
 
             self.is_table = false;
@@ -712,6 +721,7 @@ impl CommonMarkViewerInternal {
             }
 
             self.line.try_insert_end(ui);
+            ui.label("\n");
         }
     }
 
@@ -804,7 +814,7 @@ impl CommonMarkViewerInternal {
     }
 
     /// Render a body-text segment, splitting it at search-match boundaries and
-    /// painting yellow (match) or orange (active match) backgrounds on the hits.
+    /// painting teal (match) or violet (active match) backgrounds on the hits.
     /// Falls back to a plain label when there are no overlapping search ranges.
     fn render_body_text(
         &self,
