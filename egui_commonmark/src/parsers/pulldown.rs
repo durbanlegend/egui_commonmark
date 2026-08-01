@@ -84,19 +84,6 @@ pub struct CommonMarkViewerInternal {
     is_blockquote: bool,
     checkbox_events: Vec<CheckboxClickEvent>,
     deferred_scroll_to_heading: Option<String>,
-
-    // ── Viewport-cache state ──────────────────────────────────────────────────
-    /// Source id of the active scrollable viewer; set by show_scrollable so that
-    /// end_tag can access the right ScrollableCache for image drift detection.
-    scroll_source_id: Option<egui::Id>,
-    /// True only during the initial full-render pass (split-point recording).
-    /// False during viewport renders; controls whether end_tag records or checks
-    /// image heights.
-    recording_split_points: bool,
-    /// Set by end_tag when an image renders at a different height than the value
-    /// stored during the last full render.  Checked after show_viewport to decide
-    /// whether to invalidate the split-point cache.
-    pub(crate) layout_drift: bool,
 }
 
 pub(crate) struct CheckboxClickEvent {
@@ -121,9 +108,6 @@ impl CommonMarkViewerInternal {
             is_blockquote: false,
             checkbox_events: Vec::new(),
             deferred_scroll_to_heading: None,
-            scroll_source_id: None,
-            recording_split_points: false,
-            layout_drift: false,
         }
     }
 }
@@ -153,7 +137,6 @@ impl CommonMarkViewerInternal {
         text: &str,
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
-        self.recording_split_points = split_points_id.is_some();
         let max_width = options.max_width(ui);
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -280,7 +263,6 @@ impl CommonMarkViewerInternal {
             }
         });
 
-        self.recording_split_points = false;
         (re, std::mem::take(&mut self.checkbox_events))
     }
 
@@ -296,11 +278,6 @@ impl CommonMarkViewerInternal {
         let scroll_id = source_id.with("_scroll_area");
         // eprintln!("scroll_id={scroll_id:?}, available_size={available_size}");
 
-        // Set source_id for the whole call so that end_tag can access the right
-        // ScrollableCache when recording or checking image heights.
-        self.scroll_source_id = Some(source_id);
-        self.layout_drift = false;
-
         if !options.use_viewport_cache {
             // ── Simple full-document render path ───────────────────────────────────────
             // Render the entire document on every frame; egui clips what is off-screen.
@@ -312,7 +289,6 @@ impl CommonMarkViewerInternal {
                 sc.page_size = None;
                 sc.split_points.clear();
                 sc.heading_y_positions.clear();
-                sc.image_heights.clear();
             }
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
@@ -422,31 +398,28 @@ impl CommonMarkViewerInternal {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let scroll_cache = scroll_cache(cache, &source_id);
 
-                    // Rolling-segment rendering: expose content in a window of
-                    // [render_above, render_below] rather than just the tight viewport.
-                    //
-                    // Padding by one viewport-height above and below gives three benefits:
-                    //  1. The viewport is always filled even when images or other dynamic
-                    //     elements expand the layout after the initial measurement pass.
-                    //  2. Smooth scrolling: the rendered window shifts only when the user
-                    //     scrolls outside the pad zone, rather than on every frame.
-                    //  3. Window-resize reflows are absorbed: the available-size change
-                    //     invalidates the cache and triggers a fresh full render, but the
-                    //     larger pad prevents a blank flash during the transition.
+                    // Rendering window:
+                    //   • first event: the split point whose end is just before the visible
+                    //     viewport top (viewport.min.y).  Using viewport.min.y — not a padded
+                    //     render_above — is critical: if we used render_above =
+                    //     viewport.min.y - viewport_height, the chosen split point could be
+                    //     one full viewport-height before the visible area.  Any large block
+                    //     (e.g. a tall image) that fits entirely within that gap would be
+                    //     rendered off-screen, leaving the visible area completely blank.
+                    //     Using viewport.min.y as the threshold guarantees the rendered
+                    //     content always starts just before the visible area.
+                    //   • last event: one viewport-height below the visible bottom, so
+                    //     scrolling down never shows a trailing blank.
                     //
                     // All positions are in virtual (content-relative) space (0 = top),
                     // matching viewport.min/max.y from show_viewport exactly.
                     let viewport_height = viewport.max.y - viewport.min.y;
-                    let render_above = (viewport.min.y - viewport_height).max(0.0);
                     let render_below = viewport.max.y + viewport_height;
 
-                    // Last split point whose END is before render_above (inclusive).
-                    // Using .last() rather than .nth_back(N): the viewport_height pad
-                    // already provides the over-render buffer, so we need no extra margin.
                     let (first_event_index, _, first_end_position) = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, _, end_position)| end_position.y < render_above)
+                        .filter(|(_, _, end_position)| end_position.y < viewport.min.y)
                         .last()
                         .copied()
                         .unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
@@ -492,17 +465,14 @@ impl CommonMarkViewerInternal {
             });
 
         // Invalidate the split-point cache when the available size changes (e.g. window
-        // resize) OR when image drift was detected during this viewport render (a remote
-        // image loaded after the initial measurement pass, changing the layout height).
-        // Because scroll_offset(ZERO) has been removed from the full-render path, the
-        // re-render will happen at the current scroll position — no flash to the top.
+        // resize).  The re-render happens at the current scroll position — no flash to top —
+        // because scroll_offset(ZERO) was removed from the full-render path.
         let scroll_cache = scroll_cache(cache, &source_id);
-        if available_size != scroll_cache.available_size || self.layout_drift {
+        if available_size != scroll_cache.available_size {
             scroll_cache.available_size = available_size;
             scroll_cache.page_size = None;
             scroll_cache.split_points.clear();
             scroll_cache.heading_y_positions.clear();
-            scroll_cache.image_heights.clear();
         }
     }
 
@@ -1096,23 +1066,7 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Image => {
                 if let Some(image) = self.image.take() {
-                    let uri = image.uri.clone();
-                    let height = image.end(ui, options);
-                    // Track image heights to detect layout drift caused by remote images
-                    // loading after the initial full-render measurement pass.
-                    if let Some(source_id) = self.scroll_source_id {
-                        let sc = scroll_cache(cache, &source_id);
-                        if self.recording_split_points {
-                            // Full render: record the measured height as the baseline.
-                            sc.image_heights.insert(uri, height);
-                        } else if let Some(&expected_h) = sc.image_heights.get(&uri) {
-                            // Viewport render: if the image now renders taller (loaded since
-                            // the last full render), flag a drift so the cache is refreshed.
-                            if (height - expected_h).abs() > 2.0 {
-                                self.layout_drift = true;
-                            }
-                        }
-                    }
+                    image.end(ui, options);
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {
