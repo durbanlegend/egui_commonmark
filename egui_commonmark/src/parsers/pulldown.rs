@@ -84,6 +84,11 @@ pub struct CommonMarkViewerInternal {
     is_blockquote: bool,
     checkbox_events: Vec<CheckboxClickEvent>,
     deferred_scroll_to_heading: Option<String>,
+    /// Set during a full render if any image rendered at zero height (not yet loaded).
+    /// When true, split points are discarded and page_size is not committed so that
+    /// the full render repeats on the next repaint (issued automatically by the image
+    /// loader) until all images have stable heights.
+    any_image_loading: bool,
 }
 
 pub(crate) struct CheckboxClickEvent {
@@ -108,6 +113,7 @@ impl CommonMarkViewerInternal {
             is_blockquote: false,
             checkbox_events: Vec::new(),
             deferred_scroll_to_heading: None,
+            any_image_loading: false,
         }
     }
 }
@@ -137,6 +143,7 @@ impl CommonMarkViewerInternal {
         text: &str,
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
+        self.any_image_loading = false; // reset for this render pass
         let max_width = options.max_width(ui);
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -253,13 +260,25 @@ impl CommonMarkViewerInternal {
             *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
 
             if let Some(source_id) = split_points_id {
-                // Normalise page_size.y to virtual height (total content height, 0-based).
-                // ui.set_height(page_size.y) in show_scrollable uses this to set the
-                // virtual document height for the scroll area, so it must not include
-                // the screen_top (content_origin_y) offset.
-                let final_y = ui.next_widget_position().y;
-                scroll_cache(cache, &source_id).page_size =
-                    Some(egui::vec2(max_width, final_y - content_origin_y));
+                if self.any_image_loading {
+                    // One or more images rendered at zero height this pass — their sizes
+                    // are not yet known, so the split points we just recorded are
+                    // unreliable.  Discard them and leave page_size = None so
+                    // show_scrollable stays in full-render mode.  The image loader will
+                    // call ctx.request_repaint() when each image arrives, giving us
+                    // another pass automatically.  Once every image has a stable
+                    // non-zero height the split points are committed and viewport culling
+                    // takes over.
+                    let sc = scroll_cache(cache, &source_id);
+                    sc.split_points.clear();
+                    sc.heading_y_positions.clear();
+                    // page_size intentionally left as None
+                } else {
+                    // All images have stable heights — safe to commit.
+                    let final_y = ui.next_widget_position().y;
+                    scroll_cache(cache, &source_id).page_size =
+                        Some(egui::vec2(max_width, final_y - content_origin_y));
+                }
             }
         });
 
@@ -1066,7 +1085,13 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Image => {
                 if let Some(image) = self.image.take() {
-                    image.end(ui, options);
+                    let height = image.end(ui, options);
+                    if height < 1.0 {
+                        // Image is still in a pending/loading state — egui renders it
+                        // as a zero-size placeholder.  Signal that split points recorded
+                        // during this pass cannot be trusted yet.
+                        self.any_image_loading = true;
+                    }
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {
