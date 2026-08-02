@@ -247,6 +247,7 @@ impl CommonMarkViewerInternal {
                     self.line.should_end_newline_forced = false;
                 }
 
+                // let e_clone = e.clone();
                 self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
 
                 let should_add_split_point = is_safe_block_end;
@@ -276,8 +277,8 @@ impl CommonMarkViewerInternal {
                         let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
                         scroll_cache.split_points.push((index, vstart, vend));
                         // eprintln!(
-                        //     "Pushed split_point: index={index}, vstart=({},{}) vend=({},{})",
-                        //     vstart.x, vstart.y, vend.x, vend.y
+                        //     "Pushed split_point for event {e_clone:?}: index={index}, vstart=({},{}) vend=({},{}, height={})",
+                        //     vstart.x, vstart.y, vend.x, vend.y, vend.y - vstart.y
                         // )
                     }
                 }
@@ -291,6 +292,7 @@ impl CommonMarkViewerInternal {
             *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
 
             if let Some(source_id) = split_points_id {
+                // eprintln!("Any image loading? {}", self.any_image_loading);
                 if self.any_image_loading {
                     // One or more images rendered at zero height this pass — their sizes
                     // are not yet known, so the split points we just recorded are
@@ -448,21 +450,13 @@ impl CommonMarkViewerInternal {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let scroll_cache = scroll_cache(cache, &source_id);
 
-                    // Rendering window:
+                    // Rendering window:  all positions are in virtual (content-relative)
+                    // space (0 = top), matching viewport.min/max.y from show_viewport.
+                    //
                     //   • first event: the split point whose end is just before the visible
-                    //     viewport top (viewport.min.y).  Using viewport.min.y — not a padded
-                    //     render_above — is critical: if we used render_above =
-                    //     viewport.min.y - viewport_height, the chosen split point could be
-                    //     one full viewport-height before the visible area.  Any large block
-                    //     (e.g. a tall image) that fits entirely within that gap would be
-                    //     rendered off-screen, leaving the visible area completely blank.
-                    //     Using viewport.min.y as the threshold guarantees the rendered
-                    //     content always starts just before the visible area.
+                    //     viewport top (viewport.min.y).
                     //   • last event: one viewport-height below the visible bottom, so
                     //     scrolling down never shows a trailing blank.
-                    //
-                    // All positions are in virtual (content-relative) space (0 = top),
-                    // matching viewport.min/max.y from show_viewport exactly.
                     let viewport_height = viewport.max.y - viewport.min.y;
                     let render_below = viewport.max.y + viewport_height;
 
@@ -534,6 +528,18 @@ impl CommonMarkViewerInternal {
                     }
                 });
             });
+
+        // If any image in the viewport render reported zero height (texture not yet
+        // loaded or recently evicted), the split points are stale.  Discard them so
+        // the next frame falls back to a full render, which re-measures every image
+        // height and re-commits correct split points once all textures are stable.
+        // This mirrors the identical check at the end of show() for the full-render path.
+        if self.any_image_loading {
+            let sc = scroll_cache(cache, &source_id);
+            sc.page_size = None;
+            sc.split_points.clear();
+            sc.heading_y_positions.clear();
+        }
 
         // Invalidate the split-point cache when the available size changes (e.g. window
         // resize).  The re-render happens at the current scroll position — no flash to top —
@@ -1137,7 +1143,9 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Image => {
                 if let Some(image) = self.image.take() {
+                    // let uri = &image.uri.clone();
                     let height = image.end(ui, options);
+                    // eprintln!("image={uri}, loading? {}", height < 1.0);
                     if height < 1.0 {
                         // Image is still in a pending/loading state — egui renders it
                         // as a zero-size placeholder.  Signal that split points recorded

@@ -270,25 +270,48 @@ impl Image {
         }
     }
 
-    /// Renders the image and returns its rendered height in points.
+    /// Renders the image and returns its rendered height in points, or `0.0` if
+    /// the texture is still loading.  Returning `0.0` when pending allows the
+    /// caller to detect that split-point heights should not yet be committed.
+    ///
+    /// Background: when a URI image is still pending egui falls back to a
+    /// 24×24 placeholder allocation, so `response.rect.height()` is 24.0 —
+    /// well above the `< 1.0` loading guard.  We therefore query the texture
+    /// load state directly and return `0.0` whenever the texture reports
+    /// `TexturePoll::Pending`, regardless of what was allocated on screen.
     pub fn end(self, ui: &mut Ui, options: &CommonMarkOptions) -> f32 {
+        // Destructure early so `uri` remains accessible after the alt-text
+        // closure moves `alt_text`.
+        let Self { uri, alt_text } = self;
+
         let response = ui.add(
-            egui::Image::from_uri(&self.uri)
+            egui::Image::from_uri(&uri)
                 .fit_to_original_size(1.0)
                 .max_width(options.max_width(ui)),
         );
 
         let height = response.rect.height();
 
-        if !self.alt_text.is_empty() && options.show_alt_text_on_hover {
+        if !alt_text.is_empty() && options.show_alt_text_on_hover {
             response.on_hover_ui_at_pointer(|ui| {
-                for alt in self.alt_text {
+                for alt in alt_text {
                     ui.label(alt);
                 }
             });
         }
 
-        height
+        // Check the real load state.  egui's 24×24 fallback means height ≥ 1.0
+        // even while Pending, so we cannot rely on the height alone.
+        let is_pending = matches!(
+            ui.ctx().try_load_texture(
+                &uri,
+                egui::TextureOptions::default(),
+                egui::load::SizeHint::default(),
+            ),
+            Ok(egui::load::TexturePoll::Pending { .. })
+        );
+
+        if is_pending { 0.0 } else { height }
     }
 }
 
