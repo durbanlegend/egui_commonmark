@@ -176,8 +176,33 @@ impl CommonMarkViewerInternal {
             // which correctly cancels the screen_top offset regardless of scroll position.
             let content_origin_y = ui.next_widget_position().y;
 
+            // Tracks the cursor at the visual TOP of the current safe block so that the
+            // split-point vstart reflects where the block begins, not where it ends.
+            // Without this, vstart for an image paragraph would be at the image bottom
+            // (cursor position when End(Paragraph) starts processing), making the
+            // last_event_index culling filter use the wrong threshold — images would only
+            // enter the render window based on their bottom, not their top.
+            let mut block_start_position: Option<Pos2> = None;
+
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position(); // screen-space (normalised below)
+
+                // Capture the cursor before any content is rendered for this block.
+                // Only set for the same block types that produce split points, and only
+                // at the top level (not inside lists), mirroring is_safe_block_end.
+                let is_safe_block_start = !self.list.is_inside_a_list()
+                    && matches!(
+                        e,
+                        pulldown_cmark::Event::Start(
+                            pulldown_cmark::Tag::Paragraph
+                                | pulldown_cmark::Tag::Heading { .. }
+                                | pulldown_cmark::Tag::CodeBlock(_)
+                        )
+                    );
+                if is_safe_block_start {
+                    block_start_position = Some(start_position);
+                }
+
                 // Record heading y-positions for the heading-scroll fast path.
                 if let (
                     Some(sid),
@@ -240,8 +265,14 @@ impl CommonMarkViewerInternal {
                     if !split_point_exists {
                         // Normalise to virtual (content-relative) coordinates so that
                         // the positions are directly comparable to viewport.min/max.y.
-                        let vstart =
-                            egui::pos2(start_position.x, start_position.y - content_origin_y);
+                        //
+                        // Use block_start_position (captured at the matching Start event)
+                        // rather than start_position (cursor just before End(Block)).  For
+                        // text paragraphs the difference is small, but for image paragraphs
+                        // start_position would be the image bottom — far from the block's
+                        // visual top — causing incorrect viewport culling.
+                        let raw_vstart = block_start_position.take().unwrap_or(start_position);
+                        let vstart = egui::pos2(raw_vstart.x, raw_vstart.y - content_origin_y);
                         let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
                         scroll_cache.split_points.push((index, vstart, vend));
                         // eprintln!(
@@ -435,13 +466,17 @@ impl CommonMarkViewerInternal {
                     let viewport_height = viewport.max.y - viewport.min.y;
                     let render_below = viewport.max.y + viewport_height;
 
-                    let (first_event_index, _, first_end_position) = scroll_cache
+                    // Capture as Option so we can distinguish a real preceding split
+                    // from the (0, ZERO, ZERO) fallback used at the top of the document.
+                    let preceding_split = scroll_cache
                         .split_points
                         .iter()
                         .filter(|(_, _, end_position)| end_position.y < viewport.min.y)
                         .last()
-                        .copied()
-                        .unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
+                        .copied();
+
+                    let (_first_event_index, _, first_end_position) =
+                        preceding_split.unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
 
                     // First split point whose START is past render_below.
                     let last_event_index = scroll_cache
@@ -461,12 +496,29 @@ impl CommonMarkViewerInternal {
                     let skip_height = first_end_position.y.max(0.0);
                     ui.allocate_space(egui::vec2(max_width, skip_height));
 
+                    // When a real preceding split was found, skip_height already accounts for
+                    // the End(Block) event that created the split point (its trailing newline
+                    // is baked into vend = skip_height).  Re-processing that End(Block) event
+                    // would add a duplicate newline.  Instead:
+                    //   • skip one extra event (the End(Block)) so rendering starts from the
+                    //     Start of the first visible block.
+                    //   • reset should_not_start_newline_forced: we are mid-document, so the
+                    //     first visible block's try_insert_start should fire normally.
+                    // When no preceding split was found (top-of-document fallback), keep the
+                    // existing behaviour: start from event 0 with the forced-no-newline flag.
+                    let (skip_count, take_count) = if let Some((idx, _, _)) = preceding_split {
+                        self.line.should_not_start_newline_forced = false;
+                        (idx + 1, last_event_index - idx)
+                    } else {
+                        (0, last_event_index)
+                    };
+
                     // only rendering the elements that are inside the viewport
                     let mut events = events
                         .into_iter()
                         .enumerate()
-                        .skip(first_event_index)
-                        .take(last_event_index - first_event_index)
+                        .skip(skip_count)
+                        .take(take_count)
                         .peekable();
 
                     while let Some((i, (e, src_span))) = events.next() {
