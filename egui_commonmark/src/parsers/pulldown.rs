@@ -346,14 +346,14 @@ impl CommonMarkViewerInternal {
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    // Passing None disables split-point recording; TOC navigation works
+                    // via the original ui.scroll_to_cursor() path in start_tag().
+                    self.show(ui, cache, options, text, None);
                     let delta =
                         std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
                     if delta != egui::Vec2::ZERO {
                         ui.scroll_with_delta(delta);
                     }
-                    // Passing None disables split-point recording; TOC navigation works
-                    // via the original ui.scroll_to_cursor() path in start_tag().
-                    self.show(ui, cache, options, text, None);
                 });
             return;
         }
@@ -370,13 +370,13 @@ impl CommonMarkViewerInternal {
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    self.show(ui, cache, options, text, Some(source_id));
                     // Apply any pending keyboard/programmatic scroll delta.
                     let delta =
                         std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
                     if delta != egui::Vec2::ZERO {
                         ui.scroll_with_delta(delta);
                     }
-                    self.show(ui, cache, options, text, Some(source_id));
                 });
             // Prevent repopulating points twice at startup
             scroll_cache(cache, &source_id).available_size = available_size;
