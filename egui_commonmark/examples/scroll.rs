@@ -1,16 +1,20 @@
 //! Make sure to run this example from the repo directory and not the example
 //! directory. To see all the features in full effect, run this example with
-//! `cargo r --example scroll --features better_syntax_highlighting,svg,fetch
+//! `cargo r --example scroll --features better_syntax_highlighting,svg,fetch`.
 //! Add `light` or `dark` to the end of the command to specify theme. Default
 //! is light. `cargo r --example scroll --all-features dark`
+//! Run with CACHE=false to disable caching for comparison.
+
+use std::env;
 
 use eframe::egui;
 use egui::Ui;
-use egui_commonmark::*;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 struct App {
     cache: CommonMarkCache,
     content: String,
+    viewport_cache: bool,
 }
 
 impl eframe::App for App {
@@ -18,9 +22,8 @@ impl eframe::App for App {
         ui.set_min_height(512.0);
 
         egui::CentralPanel::default().show(ui, |ui| {
-            // ── Style the scroll bar that show_scrollable will create internally ─
-            // These settings propagate into the inner ScrollArea because
-            // show_scrollable inherits ui.style() from this outer ui.
+            // ── Style the scroll bar to show the them position clearly for the demo.
+            // This Ui gets passed along to and used by show_scrollable.
             {
                 let scroll = &mut ui.style_mut().spacing.scroll;
                 scroll.floating = true;
@@ -83,24 +86,19 @@ impl eframe::App for App {
 
             CommonMarkViewer::new()
                 .max_image_width(Some(512))
-                .viewport_cache(true)
+                .viewport_cache(self.viewport_cache)
                 .show_scrollable("Generated content", ui, &mut self.cache, &self.content);
         });
     }
 }
 
 fn main() {
-    let mut args = std::env::args();
+    let mut args = env::args();
     args.next();
-    let use_dark_theme = if let Some(theme) = args.next() {
-        if theme == "light" {
-            false
-        } else {
-            theme == "dark"
-        }
-    } else {
-        false
-    };
+
+    let viewport_cache = env::var("CACHE")
+        .map(|v| v.to_lowercase() != "false" && v != "0")
+        .unwrap_or(true);
 
     let text = build_document();
 
@@ -110,15 +108,18 @@ fn main() {
         "Markdown viewer",
         eframe::NativeOptions::default(),
         Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(if use_dark_theme {
-                egui::Visuals::dark()
-            } else {
-                egui::Visuals::light()
-            });
+            if let Some(theme) = args.next() {
+                if theme == "light" {
+                    cc.egui_ctx.set_theme(egui::Theme::Light);
+                } else if theme == "dark" {
+                    cc.egui_ctx.set_theme(egui::Theme::Dark);
+                }
+            }
 
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
                 content: text,
+                viewport_cache,
             }))
         }),
     )
@@ -126,15 +127,15 @@ fn main() {
 }
 
 fn build_document() -> String {
-    let mut text = r#"# Commonmark Viewer Example
+    let mut text = r"# Commonmark Viewer Example
     This is a fairly large markdown file showcasing scroll.
 
     After the first rendering pass it should be responsive.
     But it will need to re-render each time the app is resized
     or if the content gets modified for any reason.
 
-    To experience uncached performance for comparison, set
-    `.viewport_cache(false)` on the `CommonmarkViewer`.
+    To experience uncached performance for comparison, run
+    with the environment variable `CACHE=false`.
 
     The scrollbar has deliberately been made conspicuous
     for the demonstration.
@@ -146,10 +147,10 @@ fn build_document() -> String {
         Down 1 line:    Down-arrow
         Up   1 page:    Fn-up arrow
         Down 1 page:    Fn-up arrow
-                "#
+                "
     .to_string();
 
-    let repeating = r#"
+    let repeating = r"
 This section will be repeated
 
 ```rs
@@ -164,7 +165,7 @@ vec.push(5);
 * Take a picture
 
 [![Take a picture](https://picsum.photos/300/200/?random)](https://picsum.photos/300/200/?random)
-    "#;
+    ";
     text += &repeating.repeat(1024);
     text
 }

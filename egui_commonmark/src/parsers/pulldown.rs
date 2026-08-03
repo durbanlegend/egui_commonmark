@@ -465,8 +465,7 @@ impl CommonMarkViewerInternal {
                     let preceding_split = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, _, end_position)| end_position.y < viewport.min.y)
-                        .last()
+                        .rfind(|(_, _, end_position)| end_position.y < viewport.min.y)
                         .copied();
 
                     let (_first_event_index, _, first_end_position) =
@@ -476,8 +475,7 @@ impl CommonMarkViewerInternal {
                     let last_event_index = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, start_position, _)| start_position.y > render_below)
-                        .next()
+                        .find(|(_, start_position, _)| start_position.y > render_below)
                         .map(|(index, _, _)| *index)
                         .unwrap_or(num_rows);
 
@@ -912,8 +910,7 @@ impl CommonMarkViewerInternal {
                 .map(|r| {
                     let local_start = r.start.saturating_sub(src_span.start).min(text.len());
                     let local_end = r.end.saturating_sub(src_span.start).min(text.len());
-                    let is_active =
-                        active.map_or(false, |ar| ar.start == r.start && ar.end == r.end);
+                    let is_active = active.is_some_and(|ar| ar.start == r.start && ar.end == r.end);
                     (local_start, local_end, is_active)
                 })
                 .filter(|(s, e, _)| s < e)
@@ -930,10 +927,10 @@ impl CommonMarkViewerInternal {
         // consecutive labels flow without gaps between them.
         let mut pos = 0usize;
         for (start, end, is_active) in &intervals {
-            if pos < *start {
-                if let Some(slice) = text.get(pos..*start) {
-                    ui.label(self.text_style.to_richtext(ui, slice));
-                }
+            if pos < *start
+                && let Some(slice) = text.get(pos..*start)
+            {
+                ui.label(self.text_style.to_richtext(ui, slice));
             }
             if let Some(slice) = text.get(*start..*end) {
                 let bg = if *is_active { active_bg } else { match_bg };
@@ -941,10 +938,10 @@ impl CommonMarkViewerInternal {
             }
             pos = *end;
         }
-        if pos < text.len() {
-            if let Some(slice) = text.get(pos..) {
-                ui.label(self.text_style.to_richtext(ui, slice));
-            }
+        if pos < text.len()
+            && let Some(slice) = text.get(pos..)
+        {
+            ui.label(self.text_style.to_richtext(ui, slice));
         }
     }
 
