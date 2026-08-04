@@ -162,9 +162,9 @@ vec.push(5);
 * Make a sandwich
 * Bake a cake
 * Conquer the world
-* Take a picture
+* Meet Ferris
 
-[![Take a picture](https://picsum.photos/300/200/?random)](https://picsum.photos/300/200/?random)
+![Ferris the Rust mascot](egui_commonmark/examples/cuddlyferris.png)
     ";
     text += &repeating.repeat(1024);
     text
