@@ -821,21 +821,12 @@ impl CommonMarkViewerInternal {
             )
         };
 
-        let intervals: Vec<(usize, usize, bool)> = {
-            let active = cache.active_search_range();
-            cache
-                .search_ranges()
-                .iter()
-                .filter(|r| r.start < src_span.end && r.end > src_span.start)
-                .map(|r| {
-                    let local_start = r.start.saturating_sub(src_span.start).min(text.len());
-                    let local_end = r.end.saturating_sub(src_span.start).min(text.len());
-                    let is_active = active.is_some_and(|ar| ar.start == r.start && ar.end == r.end);
-                    (local_start, local_end, is_active)
-                })
-                .filter(|(s, e, _)| s < e)
-                .collect()
-        };
+        let intervals = search_intervals(
+            cache.search_ranges(),
+            cache.active_search_range(),
+            src_span,
+            text.len(),
+        );
 
         if intervals.is_empty() {
             ui.label(self.text_style.to_richtext(ui, text));
@@ -1090,5 +1081,119 @@ impl CommonMarkViewerInternal {
             block.end(ui, cache, options, max_width);
             self.line.try_insert_end(ui);
         }
+    }
+}
+
+/// Compute search-match intervals for one text run.
+///
+/// Filters `search_ranges` to those that overlap with `src_span`, converts
+/// them to byte offsets local to the text run (0-based, clamped to
+/// `text_len`), and flags each as active if it matches `active`.
+/// Zero-length intervals after clamping are discarded.
+fn search_intervals(
+    search_ranges: &[std::ops::Range<usize>],
+    active: Option<&std::ops::Range<usize>>,
+    src_span: std::ops::Range<usize>,
+    text_len: usize,
+) -> Vec<(usize, usize, bool)> {
+    search_ranges
+        .iter()
+        .filter(|r| r.start < src_span.end && r.end > src_span.start)
+        .map(|r| {
+            let local_start = r.start.saturating_sub(src_span.start).min(text_len);
+            let local_end = r.end.saturating_sub(src_span.start).min(text_len);
+            let is_active = active.is_some_and(|ar| ar.start == r.start && ar.end == r.end);
+            (local_start, local_end, is_active)
+        })
+        .filter(|(s, e, _)| s < e)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_intervals;
+
+    #[test]
+    fn no_ranges_gives_empty() {
+        assert!(search_intervals(&[], None, 0..10, 10).is_empty());
+    }
+
+    #[test]
+    fn range_entirely_before_span_excluded() {
+        assert!(search_intervals(&[0..5], None, 10..20, 10).is_empty());
+    }
+
+    #[test]
+    fn range_touching_span_start_excluded() {
+        // end == src_span.start does not satisfy r.end > src_span.start
+        assert!(search_intervals(&[5..10], None, 10..20, 10).is_empty());
+    }
+
+    #[test]
+    fn range_entirely_after_span_excluded() {
+        assert!(search_intervals(&[25..30], None, 10..20, 10).is_empty());
+    }
+
+    #[test]
+    fn range_touching_span_end_excluded() {
+        // start == src_span.end does not satisfy r.start < src_span.end
+        assert!(search_intervals(&[20..25], None, 10..20, 10).is_empty());
+    }
+
+    #[test]
+    fn range_fully_inside_span() {
+        let result = search_intervals(&[12..15], None, 10..20, 10);
+        assert_eq!(result, vec![(2, 5, false)]);
+    }
+
+    #[test]
+    fn range_starts_before_span_clipped_to_zero() {
+        let result = search_intervals(&[5..15], None, 10..20, 10);
+        assert_eq!(result, vec![(0, 5, false)]);
+    }
+
+    #[test]
+    fn range_ends_after_span_clipped_to_text_len() {
+        let result = search_intervals(&[15..25], None, 10..20, 10);
+        assert_eq!(result, vec![(5, 10, false)]);
+    }
+
+    #[test]
+    fn range_spans_entire_text() {
+        let result = search_intervals(&[5..30], None, 10..20, 10);
+        assert_eq!(result, vec![(0, 10, false)]);
+    }
+
+    #[test]
+    fn active_match_flagged_true() {
+        let active = 12..15;
+        let result = search_intervals(&[12..15], Some(&active), 10..20, 10);
+        assert_eq!(result, vec![(2, 5, true)]);
+    }
+
+    #[test]
+    fn different_active_does_not_flag_match() {
+        let active = 5..8;
+        let result = search_intervals(&[12..15], Some(&active), 10..20, 10);
+        assert_eq!(result, vec![(2, 5, false)]);
+    }
+
+    #[test]
+    fn multiple_ranges_all_mapped() {
+        let ranges = vec![11..13, 16..18];
+        let result = search_intervals(&ranges, None, 10..20, 10);
+        assert_eq!(result, vec![(1, 3, false), (6, 8, false)]);
+    }
+
+    #[test]
+    fn range_at_span_start_gives_local_zero() {
+        let result = search_intervals(&[10..13], None, 10..20, 10);
+        assert_eq!(result, vec![(0, 3, false)]);
+    }
+
+    #[test]
+    fn span_starts_at_document_origin() {
+        let result = search_intervals(&[2..5], None, 0..10, 10);
+        assert_eq!(result, vec![(2, 5, false)]);
     }
 }
