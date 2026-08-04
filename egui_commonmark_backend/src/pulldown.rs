@@ -1,6 +1,7 @@
 use crate::alerts::*;
 use egui::{Pos2, Vec2};
 use pulldown_cmark::Options;
+use std::collections::HashMap;
 use std::ops::Range;
 
 #[derive(Default, Debug)]
@@ -8,6 +9,10 @@ pub struct ScrollableCache {
     pub available_size: Vec2,
     pub page_size: Option<Vec2>,
     pub split_points: Vec<(usize, Pos2, Pos2)>,
+    /// Heading slug → virtual y (content-relative; 0 = document top).
+    /// Populated during the full render; used by the viewport path to
+    /// scroll to headings outside the currently rendered slice.
+    pub heading_y_positions: HashMap<String, f32>,
 }
 
 pub type EventIteratorItem<'e> = (usize, (pulldown_cmark::Event<'e>, Range<usize>));

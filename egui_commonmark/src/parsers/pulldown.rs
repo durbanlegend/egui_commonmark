@@ -84,6 +84,10 @@ pub struct CommonMarkViewerInternal {
     is_blockquote: bool,
     checkbox_events: Vec<CheckboxClickEvent>,
     deferred_scroll_to_heading: Option<String>,
+    /// Set during a full render if any image rendered at zero height (texture
+    /// still loading). When true, split points are discarded and the full render
+    /// repeats next frame until all images have stable heights.
+    any_image_loading: bool,
 }
 
 pub(crate) struct CheckboxClickEvent {
@@ -108,6 +112,7 @@ impl CommonMarkViewerInternal {
             is_blockquote: false,
             checkbox_events: Vec::new(),
             deferred_scroll_to_heading: None,
+            any_image_loading: false,
         }
     }
 }
@@ -137,6 +142,7 @@ impl CommonMarkViewerInternal {
         text: &str,
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
+        self.any_image_loading = false;
         let max_width = options.max_width(ui);
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -153,10 +159,56 @@ impl CommonMarkViewerInternal {
             .enumerate()
             .peekable();
 
+            // Screen-space y of the content origin. Subtracting this from any
+            // cursor position gives virtual (content-relative) y comparable to
+            // viewport.min/max.y from show_viewport.
+            let content_origin_y = ui.next_widget_position().y;
+
+            // Cursor at the visual top of the current block, captured at
+            // Start(Block) so that vstart reflects the block top, not its bottom.
+            let mut block_start_position: Option<Pos2> = None;
+
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position();
-                let is_element_end = matches!(e, pulldown_cmark::Event::End(_));
-                let should_add_split_point = self.list.is_inside_a_list() && is_element_end;
+
+                let is_safe_block_start = !self.list.is_inside_a_list()
+                    && matches!(
+                        e,
+                        pulldown_cmark::Event::Start(
+                            pulldown_cmark::Tag::Paragraph
+                                | pulldown_cmark::Tag::Heading { .. }
+                                | pulldown_cmark::Tag::CodeBlock(_)
+                        )
+                    );
+                if is_safe_block_start {
+                    block_start_position = Some(start_position);
+                }
+
+                // Record virtual y for each named heading so the viewport path
+                // can jump to headings that are outside the rendered slice.
+                if let (
+                    Some(sid),
+                    pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading {
+                        id: Some(id), ..
+                    }),
+                ) = (split_points_id, &e)
+                {
+                    scroll_cache(cache, &sid)
+                        .heading_y_positions
+                        .insert(id.to_string(), ui.cursor().min.y - content_origin_y);
+                }
+
+                // Only record split points at clean, top-level block boundaries
+                // where the renderer has no pending state and can restart safely.
+                let is_safe_block_end = !self.list.is_inside_a_list()
+                    && matches!(
+                        e,
+                        pulldown_cmark::Event::End(
+                            pulldown_cmark::TagEnd::Paragraph
+                                | pulldown_cmark::TagEnd::Heading { .. }
+                                | pulldown_cmark::TagEnd::CodeBlock
+                        )
+                    );
 
                 if events.peek().is_none() {
                     self.line.should_end_newline_forced = false;
@@ -165,7 +217,7 @@ impl CommonMarkViewerInternal {
                 self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
 
                 if let Some(source_id) = split_points_id
-                    && should_add_split_point
+                    && is_safe_block_end
                 {
                     let scroll_cache = scroll_cache(cache, &source_id);
                     let end_position = ui.next_widget_position();
@@ -176,9 +228,12 @@ impl CommonMarkViewerInternal {
                         .any(|(i, _, _)| *i == index);
 
                     if !split_point_exists {
-                        scroll_cache
-                            .split_points
-                            .push((index, start_position, end_position));
+                        // Use block_start_position (Start event) not start_position
+                        // (cursor just before End) so that vstart is the block top.
+                        let raw_vstart = block_start_position.take().unwrap_or(start_position);
+                        let vstart = egui::pos2(raw_vstart.x, raw_vstart.y - content_origin_y);
+                        let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
+                        scroll_cache.split_points.push((index, vstart, vend));
                     }
                 }
 
@@ -191,8 +246,18 @@ impl CommonMarkViewerInternal {
             *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
 
             if let Some(source_id) = split_points_id {
-                scroll_cache(cache, &source_id).page_size =
-                    Some(ui.next_widget_position().to_vec2());
+                if self.any_image_loading {
+                    // Images are still loading — split points are unreliable.
+                    // Discard and leave page_size = None so the full render repeats
+                    // next frame (the image loader triggers the repaint automatically).
+                    let sc = scroll_cache(cache, &source_id);
+                    sc.split_points.clear();
+                    sc.heading_y_positions.clear();
+                } else {
+                    let final_y = ui.next_widget_position().y;
+                    scroll_cache(cache, &source_id).page_size =
+                        Some(egui::vec2(max_width, final_y - content_origin_y));
+                }
             }
         });
 
@@ -217,7 +282,6 @@ impl CommonMarkViewerInternal {
                 .show(ui, |ui| {
                     self.show(ui, cache, options, text, Some(source_id));
                 });
-            // Prevent repopulating points twice at startup
             scroll_cache(cache, &source_id).available_size = available_size;
             return;
         };
@@ -231,6 +295,23 @@ impl CommonMarkViewerInternal {
 
         let num_rows = events.len();
 
+        // Resolve any pending TOC scroll via the cached heading positions so that
+        // navigation works even when the target is outside the rendered slice.
+        let pending_scroll_y: Option<f32> = {
+            let slug_owned = cache.scroll_to_id_target().map(|s| s.to_owned());
+            if let Some(ref slug) = slug_owned {
+                let sc = scroll_cache(cache, &source_id);
+                if let Some(&y) = sc.heading_y_positions.get(slug) {
+                    cache.scroll_to_id_target_mut().take();
+                    Some(y)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             // Elements have different widths, so the scroll area cannot try to shrink to the
@@ -238,6 +319,17 @@ impl CommonMarkViewerInternal {
             // with different widths.
             .auto_shrink([false, true])
             .show_viewport(ui, |ui, viewport| {
+                if let Some(y) = pending_scroll_y {
+                    // heading_y_positions stores virtual y (content-relative, 0 = top).
+                    // Inside show_viewport, next_widget_position().y = screen_top − scroll.
+                    // scroll_to_rect with Align::TOP sets new_scroll = y. ✓
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(0.0, ui.next_widget_position().y + y),
+                        egui::Vec2::ZERO,
+                    );
+                    ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                }
+
                 ui.set_height(page_size.y);
                 let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -246,41 +338,54 @@ impl CommonMarkViewerInternal {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let scroll_cache = scroll_cache(cache, &source_id);
 
-                    // finding the first element that's not in the viewport anymore
-                    let (first_event_index, _, first_end_position) = scroll_cache
+                    // Render one full viewport-height below the visible bottom so
+                    // that scrolling down never reveals a trailing blank region.
+                    let viewport_height = viewport.max.y - viewport.min.y;
+                    let render_below = viewport.max.y + viewport_height;
+
+                    let preceding_split = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, _, end_position)| end_position.y < viewport.min.y)
-                        .nth_back(1)
-                        .copied()
-                        .unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
+                        .rfind(|(_, _, vend)| vend.y < viewport.min.y)
+                        .copied();
 
-                    // finding the last element that's just outside the viewport
+                    let (_first_event_index, _, first_end_position) =
+                        preceding_split.unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
+
                     let last_event_index = scroll_cache
                         .split_points
                         .iter()
-                        .filter(|(_, start_position, _)| start_position.y > viewport.max.y)
-                        .nth(1)
+                        .find(|(_, vstart, _)| vstart.y > render_below)
                         .map(|(index, _, _)| *index)
                         .unwrap_or(num_rows);
 
-                    ui.allocate_space(first_end_position.to_vec2());
+                    // Allocate a full-width block for the off-screen content so
+                    // that the cursor lands at the correct x for the first visible block.
+                    let skip_height = first_end_position.y.max(0.0);
+                    ui.allocate_space(egui::vec2(max_width, skip_height));
 
-                    // only rendering the elements that are inside the viewport
+                    // When a preceding split was found, its End(Block) is already
+                    // accounted for in skip_height — re-processing it would add a
+                    // duplicate newline. Start from the next event instead.
+                    let (skip_count, take_count) = if let Some((idx, _, _)) = preceding_split {
+                        self.line.should_not_start_newline_forced = false;
+                        (idx + 1, last_event_index - idx)
+                    } else {
+                        (0, last_event_index)
+                    };
+
                     let mut events = events
                         .into_iter()
                         .enumerate()
-                        .skip(first_event_index)
-                        .take(last_event_index - first_event_index)
+                        .skip(skip_count)
+                        .take(take_count)
                         .peekable();
 
                     while let Some((i, (e, src_span))) = events.next() {
                         if events.peek().is_none() {
                             self.line.should_end_newline_forced = false;
                         }
-
                         self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
-
                         if i == 0 {
                             self.line.should_not_start_newline_forced = false;
                         }
@@ -288,12 +393,22 @@ impl CommonMarkViewerInternal {
                 });
             });
 
-        // Forcing full re-render to repopulate split points for the new size
+        // If any image in this render reported zero height, split points are stale.
+        // Discard them so the next frame falls back to a full render.
+        if self.any_image_loading {
+            let sc = scroll_cache(cache, &source_id);
+            sc.page_size = None;
+            sc.split_points.clear();
+            sc.heading_y_positions.clear();
+        }
+
+        // Invalidate the cache when the available size changes (e.g. window resize).
         let scroll_cache = scroll_cache(cache, &source_id);
         if available_size != scroll_cache.available_size {
             scroll_cache.available_size = available_size;
             scroll_cache.page_size = None;
             scroll_cache.split_points.clear();
+            scroll_cache.heading_y_positions.clear();
         }
     }
 
@@ -795,7 +910,9 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Image => {
                 if let Some(image) = self.image.take() {
-                    image.end(ui, options);
+                    if image.end(ui, options) < 1.0 {
+                        self.any_image_loading = true;
+                    }
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {
