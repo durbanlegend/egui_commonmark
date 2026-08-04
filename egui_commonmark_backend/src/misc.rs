@@ -36,6 +36,10 @@ pub struct CommonMarkOptions<'f> {
     /// Whether to enable scrolling to headings by their ID.
     /// To give a heading an ID, use the syntax `# Heading {#myheadingid}`. Then links to `#myheadingid` e.g. `[click me!](#myheadingid)` will scroll to that heading.
     pub enable_scroll_to_heading: bool,
+    /// When `true`, `show_scrollable` skips off-screen content each frame.
+    /// When `false` (the default), the full document is rendered and egui
+    /// clips what is off-screen — accurate but slower for very large documents.
+    pub use_viewport_cache: bool,
 }
 
 impl std::fmt::Debug for CommonMarkOptions<'_> {
@@ -58,6 +62,7 @@ impl std::fmt::Debug for CommonMarkOptions<'_> {
             )
             .field("alerts", &self.alerts)
             .field("mutable", &self.mutable)
+            .field("use_viewport_cache", &self.use_viewport_cache)
             .finish()
     }
 }
@@ -80,6 +85,7 @@ impl Default for CommonMarkOptions<'_> {
             math_fn: None,
             html_fn: None,
             enable_scroll_to_heading: false,
+            use_viewport_cache: false,
         }
     }
 }
@@ -458,6 +464,13 @@ pub struct CommonMarkCache {
 
     scroll: HashMap<egui::Id, ScrollableCache>,
     pub(self) has_installed_loaders: bool,
+    /// Keyboard / programmatic scroll delta applied inside the next
+    /// `show_scrollable` call and then cleared.
+    pub pending_scroll_delta: egui::Vec2,
+    /// Byte ranges in the source string that should be highlighted as search matches.
+    search_ranges: Vec<std::ops::Range<usize>>,
+    /// The active (focused) search match, shown with a distinct highlight colour.
+    active_search_range: Option<std::ops::Range<usize>>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -472,6 +485,9 @@ impl Default for CommonMarkCache {
             scroll: Default::default(),
             scroll_to_id_target: None,
             has_installed_loaders: false,
+            pending_scroll_delta: egui::Vec2::ZERO,
+            search_ranges: Vec::new(),
+            active_search_range: None,
         }
     }
 }
@@ -595,6 +611,34 @@ impl CommonMarkCache {
     /// Raw access to link hooks
     pub fn link_hooks_mut(&mut self) -> &mut HashMap<String, bool> {
         &mut self.link_hooks
+    }
+
+    /// Set byte ranges in the source string to highlight as search matches.
+    /// Ranges must be valid UTF-8 character boundaries.
+    pub fn set_search_ranges(&mut self, ranges: Vec<std::ops::Range<usize>>) {
+        self.search_ranges = ranges;
+    }
+
+    /// Set the active (focused) search match, displayed more prominently.
+    /// Pass `None` to clear.
+    pub fn set_active_search_range(&mut self, range: Option<std::ops::Range<usize>>) {
+        self.active_search_range = range;
+    }
+
+    /// The search ranges currently set for highlighting.
+    pub fn search_ranges(&self) -> &[std::ops::Range<usize>] {
+        &self.search_ranges
+    }
+
+    /// The active search match range.
+    pub fn active_search_range(&self) -> Option<&std::ops::Range<usize>> {
+        self.active_search_range.as_ref()
+    }
+
+    /// Accumulate a scroll delta for the next `show_scrollable` call.
+    /// Positive y scrolls toward the top; negative toward the bottom.
+    pub fn set_scroll_delta(&mut self, delta: egui::Vec2) {
+        self.pending_scroll_delta += delta;
     }
 
     /// Set all link hooks to false

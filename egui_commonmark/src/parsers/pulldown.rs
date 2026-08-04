@@ -275,12 +275,40 @@ impl CommonMarkViewerInternal {
         let available_size = ui.available_size();
         let scroll_id = source_id.with("_scroll_area");
 
+        if !options.use_viewport_cache {
+            // Simple path: render the full document every frame; egui clips
+            // what is off-screen. Clears any stale cache from a previous run.
+            {
+                let sc = scroll_cache(cache, &source_id);
+                sc.page_size = None;
+                sc.split_points.clear();
+                sc.heading_y_positions.clear();
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    self.show(ui, cache, options, text, None);
+                    let delta =
+                        std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
+                    if delta != egui::Vec2::ZERO {
+                        ui.scroll_with_delta(delta);
+                    }
+                });
+            return;
+        }
+
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     self.show(ui, cache, options, text, Some(source_id));
+                    let delta =
+                        std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
+                    if delta != egui::Vec2::ZERO {
+                        ui.scroll_with_delta(delta);
+                    }
                 });
             scroll_cache(cache, &source_id).available_size = available_size;
             return;
@@ -311,6 +339,7 @@ impl CommonMarkViewerInternal {
                 None
             }
         };
+        let pending_delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
 
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
@@ -328,6 +357,9 @@ impl CommonMarkViewerInternal {
                         egui::Vec2::ZERO,
                     );
                     ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                }
+                if pending_delta != egui::Vec2::ZERO {
+                    ui.scroll_with_delta(pending_delta);
                 }
 
                 ui.set_height(page_size.y);
@@ -692,22 +724,22 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Event::Start(tag) => self.start_tag(ui, tag, cache, options),
             pulldown_cmark::Event::End(tag) => self.end_tag(ui, tag, cache, options, max_width),
             pulldown_cmark::Event::Text(text) => {
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
             }
             pulldown_cmark::Event::Code(text) => {
                 self.text_style.code = true;
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
                 self.text_style.code = false;
             }
             pulldown_cmark::Event::InlineHtml(text) => {
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
             }
 
             pulldown_cmark::Event::Html(text) => {
                 if options.html_fn.is_some() {
                     self.html_block.push_str(&text);
                 } else {
-                    self.event_text(text, ui);
+                    self.event_text(text, src_span, ui, cache);
                 }
             }
             pulldown_cmark::Event::FootnoteReference(footnote) => {
@@ -749,16 +781,85 @@ impl CommonMarkViewerInternal {
         }
     }
 
-    fn event_text(&mut self, text: CowStr, ui: &mut Ui) {
-        let rich_text = self.text_style.to_richtext(ui, &text);
+    fn event_text(
+        &mut self,
+        text: CowStr,
+        src_span: Range<usize>,
+        ui: &mut Ui,
+        cache: &mut CommonMarkCache,
+    ) {
         if let Some(image) = &mut self.image {
-            image.alt_text.push(rich_text);
+            image.alt_text.push(self.text_style.to_richtext(ui, &text));
         } else if let Some(block) = &mut self.code_block {
             block.content.push_str(&text);
         } else if let Some(link) = &mut self.link {
-            link.text.push(rich_text);
+            link.text.push(self.text_style.to_richtext(ui, &text));
         } else {
-            ui.label(rich_text);
+            self.render_body_text(ui, cache, &text, src_span);
+        }
+    }
+
+    /// Render a body-text run, splitting at search-match boundaries and
+    /// painting a background on each hit. Falls back to a plain label when
+    /// there are no overlapping search ranges.
+    fn render_body_text(
+        &self,
+        ui: &mut Ui,
+        cache: &CommonMarkCache,
+        text: &str,
+        src_span: Range<usize>,
+    ) {
+        let (match_bg, active_bg) = if ui.visuals().dark_mode {
+            (
+                egui::Color32::from_rgb(30, 115, 105),
+                egui::Color32::from_rgb(95, 75, 165),
+            )
+        } else {
+            (
+                egui::Color32::from_rgb(140, 220, 210),
+                egui::Color32::from_rgb(185, 165, 240),
+            )
+        };
+
+        let intervals: Vec<(usize, usize, bool)> = {
+            let active = cache.active_search_range();
+            cache
+                .search_ranges()
+                .iter()
+                .filter(|r| r.start < src_span.end && r.end > src_span.start)
+                .map(|r| {
+                    let local_start = r.start.saturating_sub(src_span.start).min(text.len());
+                    let local_end = r.end.saturating_sub(src_span.start).min(text.len());
+                    let is_active = active.is_some_and(|ar| ar.start == r.start && ar.end == r.end);
+                    (local_start, local_end, is_active)
+                })
+                .filter(|(s, e, _)| s < e)
+                .collect()
+        };
+
+        if intervals.is_empty() {
+            ui.label(self.text_style.to_richtext(ui, text));
+            return;
+        }
+
+        // item_spacing.x is already 0 in the outer layout so segments flow without gaps.
+        let mut pos = 0usize;
+        for (start, end, is_active) in &intervals {
+            if pos < *start
+                && let Some(slice) = text.get(pos..*start)
+            {
+                ui.label(self.text_style.to_richtext(ui, slice));
+            }
+            if let Some(slice) = text.get(*start..*end) {
+                let bg = if *is_active { active_bg } else { match_bg };
+                ui.label(self.text_style.to_richtext(ui, slice).background_color(bg));
+            }
+            pos = *end;
+        }
+        if pos < text.len()
+            && let Some(slice) = text.get(pos..)
+        {
+            ui.label(self.text_style.to_richtext(ui, slice));
         }
     }
 
