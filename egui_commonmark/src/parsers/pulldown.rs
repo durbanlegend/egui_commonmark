@@ -1132,16 +1132,10 @@ impl CommonMarkViewerInternal {
                 }
             }
             pulldown_cmark::TagEnd::Image => {
-                if let Some(image) = self.image.take() {
-                    // let uri = &image.uri.clone();
-                    let height = image.end(ui, options);
-                    // eprintln!("image={uri}, loading? {}", height < 1.0);
-                    if height < 1.0 {
-                        // Image is still in a pending/loading state — egui renders it
-                        // as a zero-size placeholder.  Signal that split points recorded
-                        // during this pass cannot be trusted yet.
-                        self.any_image_loading = true;
-                    }
+                if let Some(image) = self.image.take()
+                    && image.end(ui, options) < 1.0
+                {
+                    self.any_image_loading = true;
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {
