@@ -390,6 +390,10 @@ impl CommonMarkViewerInternal {
                             self.line.should_not_start_newline_forced = false;
                         }
                     }
+
+                    // Mirror show()'s deferred flush so that clicking a #fragment link
+                    // while in the viewport path also triggers a scroll next frame.
+                    *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
                 });
             });
 
