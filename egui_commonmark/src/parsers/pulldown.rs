@@ -913,10 +913,10 @@ impl CommonMarkViewerInternal {
                 }
             }
             pulldown_cmark::TagEnd::Image => {
-                if let Some(image) = self.image.take() {
-                    if image.end(ui, options) < 1.0 {
-                        self.any_image_loading = true;
-                    }
+                if let Some(image) = self.image.take()
+                    && image.end(ui, options) < 1.0
+                {
+                    self.any_image_loading = true;
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {
