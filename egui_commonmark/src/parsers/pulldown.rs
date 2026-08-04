@@ -336,43 +336,39 @@ impl CommonMarkViewerInternal {
                 let max_width = options.max_width(ui);
                 ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    let scroll_cache = scroll_cache(cache, &source_id);
 
-                    // Render one full viewport-height below the visible bottom so
-                    // that scrolling down never reveals a trailing blank region.
+                    // Compute the slice parameters and release the scroll_cache borrow
+                    // before the push_id closure so that `cache` is freely accessible
+                    // inside it.
                     let viewport_height = viewport.max.y - viewport.min.y;
                     let render_below = viewport.max.y + viewport_height;
-
-                    let preceding_split = scroll_cache
-                        .split_points
-                        .iter()
-                        .rfind(|(_, _, vend)| vend.y < viewport.min.y)
-                        .copied();
-
-                    let (_first_event_index, _, first_end_position) =
-                        preceding_split.unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
-
-                    let last_event_index = scroll_cache
-                        .split_points
-                        .iter()
-                        .find(|(_, vstart, _)| vstart.y > render_below)
-                        .map(|(index, _, _)| *index)
-                        .unwrap_or(num_rows);
-
-                    // Allocate a full-width block for the off-screen content so
-                    // that the cursor lands at the correct x for the first visible block.
-                    let skip_height = first_end_position.y.max(0.0);
-                    ui.allocate_space(egui::vec2(max_width, skip_height));
-
-                    // When a preceding split was found, its End(Block) is already
-                    // accounted for in skip_height — re-processing it would add a
-                    // duplicate newline. Start from the next event instead.
-                    let (skip_count, take_count) = if let Some((idx, _, _)) = preceding_split {
-                        self.line.should_not_start_newline_forced = false;
-                        (idx + 1, last_event_index - idx)
-                    } else {
-                        (0, last_event_index)
-                    };
+                    let (skip_height, skip_count, take_count) = {
+                        let scroll_cache = scroll_cache(cache, &source_id);
+                        let preceding_split = scroll_cache
+                            .split_points
+                            .iter()
+                            .rfind(|(_, _, vend)| vend.y < viewport.min.y)
+                            .copied();
+                        let (_first_event_index, _, first_end_position) =
+                            preceding_split.unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
+                        let last_event_index = scroll_cache
+                            .split_points
+                            .iter()
+                            .find(|(_, vstart, _)| vstart.y > render_below)
+                            .map(|(index, _, _)| *index)
+                            .unwrap_or(num_rows);
+                        let skip_height = first_end_position.y.max(0.0);
+                        // When a preceding split was found, its End(Block) is already
+                        // accounted for in skip_height — re-processing it would add a
+                        // duplicate newline. Start from the next event instead.
+                        let (skip_count, take_count) = if let Some((idx, _, _)) = preceding_split {
+                            self.line.should_not_start_newline_forced = false;
+                            (idx + 1, last_event_index - idx)
+                        } else {
+                            (0, last_event_index)
+                        };
+                        (skip_height, skip_count, take_count)
+                    }; // scroll_cache borrow released here
 
                     let mut events = events
                         .into_iter()
@@ -381,19 +377,48 @@ impl CommonMarkViewerInternal {
                         .take(take_count)
                         .peekable();
 
-                    while let Some((i, (e, src_span))) = events.next() {
-                        if events.peek().is_none() {
-                            self.line.should_end_newline_forced = false;
-                        }
-                        self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
-                        if i == 0 {
-                            self.line.should_not_start_newline_forced = false;
-                        }
-                    }
+                    // Give the viewport render a distinct widget parent_id namespace
+                    // from the full-render path.  egui's warn_if_rect_changes_id check
+                    // only fires when the same screen rect has different widget IDs
+                    // *and* at least one widget shares a parent_id between consecutive
+                    // frames.  Using a different salt here vs the full-render path makes
+                    // the parent_id comparison always fail on the transition frame,
+                    // eliminating the spurious one-frame red outlines on image load and
+                    // window resize.
+                    //
+                    // IMPORTANT: push_id must be called BEFORE allocate_space so that
+                    // the cursor is still at (0, 0) — the left edge of a full-width row.
+                    // Calling it after allocate_space leaves the cursor at (max_width, …)
+                    // (right edge), making available_rect_before_wrap() return a
+                    // near-zero width and collapsing all content to a 1-pixel stripe.
+                    ui.push_id("__cm_viewport", |ui| {
+                        // Skip over off-screen content by reserving its vertical space.
+                        // Full width is essential: a narrower allocation would leave
+                        // the cursor mid-row, misaligning the first visible block.
+                        ui.allocate_space(egui::vec2(max_width, skip_height));
 
-                    // Mirror show()'s deferred flush so that clicking a #fragment link
-                    // while in the viewport path also triggers a scroll next frame.
-                    *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+                        while let Some((i, (e, src_span))) = events.next() {
+                            if events.peek().is_none() {
+                                self.line.should_end_newline_forced = false;
+                            }
+                            self.process_event(
+                                ui,
+                                &mut events,
+                                e,
+                                src_span,
+                                cache,
+                                options,
+                                max_width,
+                            );
+                            if i == 0 {
+                                self.line.should_not_start_newline_forced = false;
+                            }
+                        }
+
+                        // Mirror show()'s deferred flush so that clicking a #fragment
+                        // link while in the viewport path triggers a scroll next frame.
+                        *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+                    });
                 });
             });
 
