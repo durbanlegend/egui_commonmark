@@ -13,7 +13,7 @@ Github's markdown syntax: tables, strikethrough, tasklists and footnotes.
 In Cargo.toml:
 
 ```toml
-egui_commonmark = "0.24"
+egui_commonmark = "0.25"
 # Specify what image formats you want to use
 image = { version = "0.25", default-features = false, features = ["png"] }
 ```
@@ -34,7 +34,7 @@ CommonMarkViewer::new().show(ui, &mut cache, markdown);
 
 ## Compile time evaluation of markdown
 
-If you want to embed markdown directly the binary then you can enable the `macros` feature.
+If you want to embed markdown directly into the binary then you can enable the `macros` feature.
 This will do the parsing of the markdown at compile time and output egui widgets.
 
 ### Example
