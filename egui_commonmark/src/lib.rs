@@ -371,7 +371,13 @@ impl List {
                 bullet_point(ui);
             }
         } else {
-            unreachable!();
+            // The list stack is empty.  This can happen in the viewport-cache
+            // path when the visible slice starts with a Start(Item) event whose
+            // enclosing Start(List) fell just outside the rendered window.
+            // Synthesise a top-level unordered list level so the item renders
+            // reasonably rather than panicking.
+            self.start_level_without_number();
+            bullet_point(ui);
         }
 
         ui.add_space(4.0);

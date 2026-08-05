@@ -363,7 +363,11 @@ impl CommonMarkViewerInternal {
                         // duplicate newline. Start from the next event instead.
                         let (skip_count, take_count) = if let Some((idx, _, _)) = preceding_split {
                             self.line.should_not_start_newline_forced = false;
-                            (idx + 1, last_event_index - idx)
+                            // last_event_index should always be >= idx because
+                            // split-points are ordered, but guard against stale
+                            // cache or tiny documents producing an underflow.
+                            let take = last_event_index.saturating_sub(idx);
+                            (idx + 1, take)
                         } else {
                             (0, last_event_index)
                         };
