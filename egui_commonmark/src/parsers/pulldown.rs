@@ -382,20 +382,34 @@ impl CommonMarkViewerInternal {
                         .peekable();
 
                     // Give the viewport render a distinct widget parent_id namespace
-                    // from the full-render path.  egui's warn_if_rect_changes_id check
-                    // only fires when the same screen rect has different widget IDs
-                    // *and* at least one widget shares a parent_id between consecutive
-                    // frames.  Using a different salt here vs the full-render path makes
-                    // the parent_id comparison always fail on the transition frame,
-                    // eliminating the spurious one-frame red outlines on image load and
-                    // window resize.
+                    // so that egui's warn_if_rect_changes_id check never fires.
+                    //
+                    // The check fires when the same screen rect has different widget
+                    // IDs *and* at least one widget shares a parent_id between
+                    // consecutive frames.  Widget IDs within this push_id scope are
+                    // counter-based (sequential from 0 each frame).  The counter
+                    // resets at the start of each rendered slice, so when skip_count
+                    // advances by 1 (viewport crosses a split-point boundary), every
+                    // widget in the visible overlap shifts its ID by 1 — same rect,
+                    // same parent_id, different ID → warning fires.
+                    //
+                    // Fix: bake skip_count into the push_id salt.  Consecutive frames
+                    // with different skip_count values get different parent_ids, so the
+                    // parent_id match condition is never met.  When skip_count is
+                    // stable (viewport moves within a split-point interval), the same
+                    // slice renders with identical counter values → same IDs → no
+                    // warning then either.
+                    //
+                    // The salt tuple also differs from the full-render path's implicit
+                    // parent (no push_id), so the transition-frame guard from the
+                    // full→viewport fix remains intact.
                     //
                     // IMPORTANT: push_id must be called BEFORE allocate_space so that
-                    // the cursor is still at (0, 0) — the left edge of a full-width row.
-                    // Calling it after allocate_space leaves the cursor at (max_width, …)
-                    // (right edge), making available_rect_before_wrap() return a
-                    // near-zero width and collapsing all content to a 1-pixel stripe.
-                    ui.push_id("__cm_viewport", |ui| {
+                    // the cursor is still at (0, 0) — the left edge of a full-width
+                    // row.  Calling it after allocate_space leaves the cursor at
+                    // (max_width, …) (right edge), making available_rect_before_wrap()
+                    // return near-zero width and collapsing all content to a thin strip.
+                    ui.push_id(("__cm_viewport", skip_count), |ui| {
                         // Skip over off-screen content by reserving its vertical space.
                         // Full width is essential: a narrower allocation would leave
                         // the cursor mid-row, misaligning the first visible block.
