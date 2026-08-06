@@ -469,8 +469,14 @@ pub struct CommonMarkCache {
     pub pending_scroll_delta: egui::Vec2,
     /// Byte ranges in the source string that should be highlighted as search matches.
     search_ranges: Vec<std::ops::Range<usize>>,
-    /// The active (focused) search match, shown with a distinct highlight colour.
+    /// The active (focused) search match, shown with a distinct highlight color.
     active_search_range: Option<std::ops::Range<usize>>,
+    /// Background color for passive search match highlights. Defaults to `None`,
+    /// which falls back to a dimmed version of the egui selection background color.
+    pub search_match_bg: Option<egui::Color32>,
+    /// Background color for the active (focused) search match highlight. Defaults to
+    /// `None`, which falls back to the egui selection background color.
+    pub active_search_match_bg: Option<egui::Color32>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -488,6 +494,8 @@ impl Default for CommonMarkCache {
             pending_scroll_delta: egui::Vec2::ZERO,
             search_ranges: Vec::new(),
             active_search_range: None,
+            search_match_bg: None,
+            active_search_match_bg: None,
         }
     }
 }
@@ -633,6 +641,18 @@ impl CommonMarkCache {
     /// The active search match range.
     pub fn active_search_range(&self) -> Option<&std::ops::Range<usize>> {
         self.active_search_range.as_ref()
+    }
+
+    /// Override the background color used for passive search match highlights.
+    /// Pass `None` to restore the default (a dimmed egui selection color).
+    pub fn set_search_match_bg(&mut self, color: Option<egui::Color32>) {
+        self.search_match_bg = color;
+    }
+
+    /// Override the background color used for the active (focused) search match.
+    /// Pass `None` to restore the default (the egui selection color).
+    pub fn set_active_search_match_bg(&mut self, color: Option<egui::Color32>) {
+        self.active_search_match_bg = color;
     }
 
     /// Accumulate a scroll delta for the next `show_scrollable` call.

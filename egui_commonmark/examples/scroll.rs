@@ -19,17 +19,7 @@ impl eframe::App for App {
         ui.set_min_height(512.0);
 
         egui::CentralPanel::default().show(ui, |ui| {
-            // Style the scroll bar to make the thumb position clearly visible.
-            {
-                let scroll = &mut ui.style_mut().spacing.scroll;
-                scroll.floating = true;
-                scroll.floating_width = 7.0;
-                scroll.content_margin = egui::Margin::same(10);
-                scroll.bar_width = 10.0;
-                scroll.dormant_handle_opacity = 0.40;
-                scroll.interact_handle_opacity = 0.55;
-                scroll.active_handle_opacity = 0.80;
-            }
+            ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
             let (
                 scroll_line_up,
@@ -129,45 +119,27 @@ fn build_document() -> String {
          \n",
     );
 
-    let repeating = "\n\
-        This section will be repeated.\n\
-        \n\
-        ```rs\n\
-        let mut vec = Vec::new();\n\
-        vec.push(5);\n\
-        ```\n\
-        \n\
-        # Plans\n\
-        * Make a sandwich\n\
-        * Bake a cake\n\
-        * Conquer the world\n\
-        \n\
-        ![Ferris the Rust mascot](egui_commonmark/examples/cuddlyferris.png)\n\
-        \n";
-
-    // Insert a named anchor at a predictable location for the TOC link demo.
-    let anchor_section = "\n\
-        This section will be repeated.\n\
-        \n\
-        ```rs\n\
-        let mut vec = Vec::new();\n\
-        vec.push(5);\n\
-        ```\n\
-        \n\
-        # Plans {#section-500}\n\
-        * Make a sandwich\n\
-        * Bake a cake\n\
-        * Conquer the world\n\
-        \n\
-        ![Ferris the Rust mascot](egui_commonmark/examples/cuddlyferris.png)\n\
-        \n";
-
     for i in 1..=1024_usize {
-        if i == 500 {
-            text += anchor_section;
-        } else {
-            text += repeating;
-        }
+        let id = if i == 500 { " {#section-500}" } else { "" };
+        text += &format!(
+            r#"
+## Section {i}{id}
+
+This is section {i}. Each section contains a short code block and an image.
+
+```rs
+let mut vec = Vec::new();
+vec.push({i});
+```
+* Make a sandwich
+* Bake a cake
+* Conquer the world
+
+![Ferris the Rust mascot](egui_commonmark/examples/cuddlyferris.png)
+
+"#
+        );
     }
+
     text
 }

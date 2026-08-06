@@ -289,11 +289,7 @@ impl CommonMarkViewerInternal {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     self.show(ui, cache, options, text, None);
-                    let delta =
-                        std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
-                    if delta != egui::Vec2::ZERO {
-                        ui.scroll_with_delta(delta);
-                    }
+                    apply_pending_scroll_delta(cache, ui);
                 });
             return;
         }
@@ -304,11 +300,7 @@ impl CommonMarkViewerInternal {
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     self.show(ui, cache, options, text, Some(source_id));
-                    let delta =
-                        std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
-                    if delta != egui::Vec2::ZERO {
-                        ui.scroll_with_delta(delta);
-                    }
+                    apply_pending_scroll_delta(cache, ui);
                 });
             scroll_cache(cache, &source_id).available_size = available_size;
             return;
@@ -809,17 +801,11 @@ impl CommonMarkViewerInternal {
         text: &str,
         src_span: Range<usize>,
     ) {
-        let (match_bg, active_bg) = if ui.visuals().dark_mode {
-            (
-                egui::Color32::from_rgb(30, 115, 105),
-                egui::Color32::from_rgb(95, 75, 165),
-            )
-        } else {
-            (
-                egui::Color32::from_rgb(140, 220, 210),
-                egui::Color32::from_rgb(185, 165, 240),
-            )
-        };
+        let selection_bg = ui.visuals().selection.bg_fill;
+        let active_bg = cache.active_search_match_bg.unwrap_or(selection_bg);
+        let match_bg = cache
+            .search_match_bg
+            .unwrap_or_else(|| selection_bg.gamma_multiply(0.6));
 
         let intervals = search_intervals(
             cache.search_ranges(),
@@ -843,7 +829,19 @@ impl CommonMarkViewerInternal {
             }
             if let Some(slice) = text.get(*start..*end) {
                 let bg = if *is_active { active_bg } else { match_bg };
-                ui.label(self.text_style.to_richtext(ui, slice).background_color(bg));
+                let rich = if self.text_style.code {
+                    // .code() paints a gray background that overrides background_color,
+                    // so we apply the monospace font directly instead.
+                    let mut style = self.text_style.clone();
+                    style.code = false;
+                    style
+                        .to_richtext(ui, slice)
+                        .text_style(egui::TextStyle::Monospace)
+                        .background_color(bg)
+                } else {
+                    self.text_style.to_richtext(ui, slice).background_color(bg)
+                };
+                ui.label(rich);
             }
             pos = *end;
         }
@@ -1081,6 +1079,13 @@ impl CommonMarkViewerInternal {
             block.end(ui, cache, options, max_width);
             self.line.try_insert_end(ui);
         }
+    }
+}
+
+fn apply_pending_scroll_delta(cache: &mut CommonMarkCache, ui: &mut Ui) {
+    let delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
+    if delta != egui::Vec2::ZERO {
+        ui.scroll_with_delta(delta);
     }
 }
 
