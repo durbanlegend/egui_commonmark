@@ -469,8 +469,13 @@ pub struct CommonMarkCache {
     pub pending_scroll_delta: egui::Vec2,
     /// Byte ranges in the source string that should be highlighted as search matches.
     search_ranges: Vec<std::ops::Range<usize>>,
-    /// The active (focused) search match, shown with a distinct highlight color.
+    /// The active (focused) search match, shown with a distinct highlight colour.
     active_search_range: Option<std::ops::Range<usize>>,
+    /// When true, the renderer will scroll the enclosing `ScrollArea` to centre
+    /// the active search match in the viewport on the next frame, then clear
+    /// this flag automatically.
+    scroll_to_active_match: bool,
+    /// Background colour for passive search match highlights.
     /// Background color for passive search match highlights. Defaults to `None`,
     /// which falls back to a dimmed version of the egui selection background color.
     pub search_match_bg: Option<egui::Color32>,
@@ -494,6 +499,7 @@ impl Default for CommonMarkCache {
             pending_scroll_delta: egui::Vec2::ZERO,
             search_ranges: Vec::new(),
             active_search_range: None,
+            scroll_to_active_match: false,
             search_match_bg: None,
             active_search_match_bg: None,
         }
@@ -643,8 +649,21 @@ impl CommonMarkCache {
         self.active_search_range.as_ref()
     }
 
-    /// Override the background color used for passive search match highlights.
-    /// Pass `None` to restore the default (a dimmed egui selection color).
+    /// Request that the renderer scroll the enclosing `ScrollArea` to centre
+    /// the active search match in the viewport on the next frame.
+    /// The flag is cleared automatically once the scroll has been applied.
+    pub fn set_scroll_to_active_match(&mut self, scroll: bool) {
+        self.scroll_to_active_match = scroll;
+    }
+
+    /// Returns whether a scroll-to-active-match was requested, and clears the
+    /// flag. Called internally by the renderer.
+    pub fn take_scroll_to_active_match(&mut self) -> bool {
+        std::mem::take(&mut self.scroll_to_active_match)
+    }
+
+    /// Override the background colour used for passive search match highlights.
+    /// Pass `None` to restore the default (a dimmed egui selection colour).
     pub fn set_search_match_bg(&mut self, color: Option<egui::Color32>) {
         self.search_match_bg = color;
     }

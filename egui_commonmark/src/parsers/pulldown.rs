@@ -797,7 +797,7 @@ impl CommonMarkViewerInternal {
     fn render_body_text(
         &self,
         ui: &mut Ui,
-        cache: &CommonMarkCache,
+        cache: &mut CommonMarkCache,
         text: &str,
         src_span: Range<usize>,
     ) {
@@ -841,7 +841,10 @@ impl CommonMarkViewerInternal {
                 } else {
                     self.text_style.to_richtext(ui, slice).background_color(bg)
                 };
-                ui.label(rich);
+                let response = ui.label(rich);
+                if *is_active && cache.take_scroll_to_active_match() {
+                    ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+                }
             }
             pos = *end;
         }
