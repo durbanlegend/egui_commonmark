@@ -250,15 +250,25 @@ impl<'f> CommonMarkViewer<'f> {
     ) -> egui::InnerResponse<()> {
         egui_commonmark_backend::prepare_show(cache, ui.ctx());
 
-        let (response, _) = parsers::pulldown::CommonMarkViewerInternal::new().show(
-            ui,
-            cache,
-            &self.options,
-            text,
-            None,
-        );
-
-        response
+        // Wrap in a push_id keyed on the current search hit-set.  When
+        // search_ranges changes between frames, render_body_text splits text
+        // runs into a different number of ui.label() calls, shifting all widget
+        // counter values while the parent_id stays the same — triggering
+        // warn_if_rect_changes_id for every visible text segment.  Baking the
+        // ranges into the push_id salt means a different parent_id the moment
+        // the hit set changes, breaking the match condition.
+        let search_salt = cache.search_ranges().to_vec();
+        ui.push_id(("__cm_search", search_salt.as_slice()), |ui| {
+            let (response, _) = parsers::pulldown::CommonMarkViewerInternal::new().show(
+                ui,
+                cache,
+                &self.options,
+                text,
+                None,
+            );
+            response
+        })
+        .inner
     }
 
     /// Shows rendered markdown, and allows the rendered ui to mutate the source text.
@@ -273,14 +283,20 @@ impl<'f> CommonMarkViewer<'f> {
         self.options.mutable = true;
         egui_commonmark_backend::prepare_show(cache, ui.ctx());
 
-        let (mut inner_response, checkmark_events) =
-            parsers::pulldown::CommonMarkViewerInternal::new().show(
-                ui,
-                cache,
-                &self.options,
-                text,
-                None,
-            );
+        // Same push_id rationale as show(): suppress warn_if_rect_changes_id
+        // when the search hit set changes between frames.
+        let search_salt = cache.search_ranges().to_vec();
+        let (mut inner_response, checkmark_events) = ui
+            .push_id(("__cm_search", search_salt.as_slice()), |ui| {
+                parsers::pulldown::CommonMarkViewerInternal::new().show(
+                    ui,
+                    cache,
+                    &self.options,
+                    text,
+                    None,
+                )
+            })
+            .inner;
 
         // Update source text for checkmarks that were clicked
         for ev in checkmark_events {

@@ -284,22 +284,34 @@ impl CommonMarkViewerInternal {
                 sc.split_points.clear();
                 sc.heading_y_positions.clear();
             }
+            // Snapshot search ranges before the ScrollArea closure so the
+            // immutable borrow ends here (cache is used mutably inside).
+            let search_salt = cache.search_ranges().to_vec();
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    self.show(ui, cache, options, text, None);
+                    // push_id keyed on search_ranges: when the hit set changes,
+                    // the parent_id changes too, suppressing
+                    // warn_if_rect_changes_id (same rationale as show()).
+                    ui.push_id(("__cm_search", search_salt.as_slice()), |ui| {
+                        self.show(ui, cache, options, text, None);
+                    });
                     apply_pending_scroll_delta(cache, ui);
                 });
             return;
         }
 
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
+            // Snapshot before the closure for the same borrow-split reason.
+            let search_salt = cache.search_ranges().to_vec();
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    self.show(ui, cache, options, text, Some(source_id));
+                    ui.push_id(("__cm_search", search_salt.as_slice()), |ui| {
+                        self.show(ui, cache, options, text, Some(source_id));
+                    });
                     apply_pending_scroll_delta(cache, ui);
                 });
             scroll_cache(cache, &source_id).available_size = available_size;
@@ -398,6 +410,12 @@ impl CommonMarkViewerInternal {
                         (skip_height, skip_count, take_count)
                     }; // scroll_cache borrow released here
 
+                    // Snapshot the search ranges before the push_id closure so
+                    // that the immutable borrow of `cache` ends here, allowing
+                    // the closure to take `cache` mutably.  The snapshot is used
+                    // as part of the push_id salt (see the comment below).
+                    let search_ranges_salt = cache.search_ranges().to_vec();
+
                     let mut events = events
                         .into_iter()
                         .enumerate()
@@ -424,6 +442,15 @@ impl CommonMarkViewerInternal {
                     // slice renders with identical counter values → same IDs → no
                     // warning then either.
                     //
+                    // search_ranges is also included in the salt because active search
+                    // results cause render_body_text to split text runs into multiple
+                    // ui.label() calls (one per segment between match boundaries).  If
+                    // the search query changes between frames while skip_count stays
+                    // the same, the widget counter sequence changes for the same slice
+                    // → same rect, same parent_id, different ID → warning fires.  Baking
+                    // the ranges into the salt ensures the parent_id changes whenever
+                    // the hit set changes, breaking the parent_id match condition.
+                    //
                     // The salt tuple also differs from the full-render path's implicit
                     // parent (no push_id), so the transition-frame guard from the
                     // full→viewport fix remains intact.
@@ -433,34 +460,38 @@ impl CommonMarkViewerInternal {
                     // row.  Calling it after allocate_space leaves the cursor at
                     // (max_width, …) (right edge), making available_rect_before_wrap()
                     // return near-zero width and collapsing all content to a thin strip.
-                    ui.push_id(("__cm_viewport", skip_count), |ui| {
-                        // Skip over off-screen content by reserving its vertical space.
-                        // Full width is essential: a narrower allocation would leave
-                        // the cursor mid-row, misaligning the first visible block.
-                        ui.allocate_space(egui::vec2(max_width, skip_height));
+                    ui.push_id(
+                        ("__cm_viewport", skip_count, search_ranges_salt.as_slice()),
+                        |ui| {
+                            // Skip over off-screen content by reserving its vertical space.
+                            // Full width is essential: a narrower allocation would leave
+                            // the cursor mid-row, misaligning the first visible block.
+                            ui.allocate_space(egui::vec2(max_width, skip_height));
 
-                        while let Some((i, (e, src_span))) = events.next() {
-                            if events.peek().is_none() {
-                                self.line.should_end_newline_forced = false;
+                            while let Some((i, (e, src_span))) = events.next() {
+                                if events.peek().is_none() {
+                                    self.line.should_end_newline_forced = false;
+                                }
+                                self.process_event(
+                                    ui,
+                                    &mut events,
+                                    e,
+                                    src_span,
+                                    cache,
+                                    options,
+                                    max_width,
+                                );
+                                if i == 0 {
+                                    self.line.should_not_start_newline_forced = false;
+                                }
                             }
-                            self.process_event(
-                                ui,
-                                &mut events,
-                                e,
-                                src_span,
-                                cache,
-                                options,
-                                max_width,
-                            );
-                            if i == 0 {
-                                self.line.should_not_start_newline_forced = false;
-                            }
-                        }
 
-                        // Mirror show()'s deferred flush so that clicking a #fragment
-                        // link while in the viewport path triggers a scroll next frame.
-                        *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
-                    });
+                            // Mirror show()'s deferred flush so that clicking a #fragment
+                            // link while in the viewport path triggers a scroll next frame.
+                            *cache.scroll_to_id_target_mut() =
+                                self.deferred_scroll_to_heading.take();
+                        },
+                    );
                 });
             });
 
