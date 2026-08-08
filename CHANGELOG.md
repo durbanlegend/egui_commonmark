@@ -1,5 +1,17 @@
 # egui_commonmark changelog
 
+## 0.25.0 - 2026-08-05
+
+### Changed
+
+- Update egui to 0.36 ([#100](https://github.com/lampsitter/egui_commonmark/pull/100) by
+  [@lucasmerlin](https://github.com/lucasmerlin))
+
+### Fixed
+
+- Fixed badges getting superimposed ([#95](https://github.com/lampsitter/egui_commonmark/pull/95) by
+  [@durbanlegend](https://github.com/durbanlegend))
+
 ## 0.24.0 - 2026-06-26
 
 ### Added
