@@ -36,6 +36,10 @@ pub struct CommonMarkOptions<'f> {
     /// Whether to enable scrolling to headings by their ID.
     /// To give a heading an ID, use the syntax `# Heading {#myheadingid}`. Then links to `#myheadingid` e.g. `[click me!](#myheadingid)` will scroll to that heading.
     pub enable_scroll_to_heading: bool,
+    /// When `true`, `show_scrollable` only renders the visible slice of the
+    /// document each frame. When `false` (the default) the full document is
+    /// rendered every frame and egui clips what is off-screen.
+    pub use_viewport_cache: bool,
 }
 
 impl std::fmt::Debug for CommonMarkOptions<'_> {
@@ -80,6 +84,7 @@ impl Default for CommonMarkOptions<'_> {
             math_fn: None,
             html_fn: None,
             enable_scroll_to_heading: false,
+            use_viewport_cache: false,
         }
     }
 }
@@ -458,6 +463,9 @@ pub struct CommonMarkCache {
 
     scroll: HashMap<egui::Id, ScrollableCache>,
     pub(self) has_installed_loaders: bool,
+    /// Keyboard / programmatic scroll delta applied inside the next
+    /// `show_scrollable` call and then cleared.
+    pub pending_scroll_delta: egui::Vec2,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -472,6 +480,7 @@ impl Default for CommonMarkCache {
             scroll: Default::default(),
             scroll_to_id_target: None,
             has_installed_loaders: false,
+            pending_scroll_delta: egui::Vec2::ZERO,
         }
     }
 }
@@ -531,6 +540,19 @@ impl CommonMarkCache {
     /// Get mutable access to the desired fragment. Setting this will cause the viewer to scroll to the heading with this id if it exists. Setting it to None will prevent scrolling.
     pub fn scroll_to_id_target_mut(&mut self) -> &mut Option<String> {
         &mut self.scroll_to_id_target
+    }
+
+    /// Accumulate a scroll delta to be applied inside the next [`show_scrollable`] call
+    /// and then cleared. Positive y scrolls toward the top; negative toward the bottom.
+    /// Multiple calls before the next frame are summed.
+    ///
+    /// This is the preferred way to drive keyboard or programmatic scrolling when using
+    /// [`show_scrollable`], because the scroll area is owned internally and cannot be
+    /// reached directly by the caller.
+    ///
+    /// [`show_scrollable`]: crate::CommonMarkViewer::show_scrollable
+    pub fn set_scroll_delta(&mut self, delta: egui::Vec2) {
+        self.pending_scroll_delta += delta;
     }
 
     /// Clear the cache for all scrollable elements
