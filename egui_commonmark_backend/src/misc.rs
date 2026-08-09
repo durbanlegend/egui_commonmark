@@ -263,20 +263,35 @@ impl Image {
         }
     }
 
-    pub fn end(self, ui: &mut Ui, options: &CommonMarkOptions) {
+    /// Returns the rendered height in points, or `0.0` if the texture is still
+    /// loading. The caller uses this to detect whether split-point heights can
+    /// be trusted.
+    pub fn end(self, ui: &mut Ui, options: &CommonMarkOptions) -> f32 {
+        let Self { uri, alt_text } = self;
         let response = ui.add(
-            egui::Image::from_uri(&self.uri)
+            egui::Image::from_uri(&uri)
                 .fit_to_original_size(1.0)
                 .max_width(options.max_width(ui)),
         );
-
-        if !self.alt_text.is_empty() && options.show_alt_text_on_hover {
+        let height = response.rect.height();
+        if !alt_text.is_empty() && options.show_alt_text_on_hover {
             response.on_hover_ui_at_pointer(|ui| {
-                for alt in self.alt_text {
+                for alt in alt_text {
                     ui.label(alt);
                 }
             });
         }
+        // egui's 24×24 placeholder means height ≥ 1.0 even while Pending, so
+        // query the load state directly rather than relying on height alone.
+        let is_pending = matches!(
+            ui.ctx().try_load_texture(
+                &uri,
+                egui::TextureOptions::default(),
+                egui::load::SizeHint::default(),
+            ),
+            Ok(egui::load::TexturePoll::Pending { .. })
+        );
+        if is_pending { 0.0 } else { height }
     }
 }
 
