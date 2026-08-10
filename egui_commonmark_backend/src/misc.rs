@@ -1,6 +1,7 @@
 use crate::alerts::AlertBundle;
 use egui::{RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
+use std::ops::Range;
 
 use crate::pulldown::ScrollableCache;
 
@@ -300,19 +301,49 @@ impl Image {
     }
 }
 
+#[derive(Default)]
 pub struct CodeBlock {
     pub lang: Option<String>,
     pub content: String,
+    /// For each chunk of text appended to `content` (one per markdown text
+    /// event), the local byte range within `content` paired with its byte
+    /// range in the original source text. Used to translate global search
+    /// match ranges into positions local to this code block.
+    pub chunks: Vec<(Range<usize>, Range<usize>)>,
 }
 
 impl CodeBlock {
+    /// Append a chunk of text to the code block's content, recording its
+    /// source span so search matches can later be mapped back onto it.
+    pub fn push_text(&mut self, text: &str, src_span: Range<usize>) {
+        let start = self.content.len();
+        self.content.push_str(text);
+        self.chunks.push((start..self.content.len(), src_span));
+    }
+
+    /// Renders the code block. If `want_scroll_to_active_match` is true and
+    /// the currently active search match falls inside this block, the view
+    /// is scrolled (centering the match) and `true` is returned so the
+    /// caller knows the request has been fulfilled.
     pub fn end(
         &self,
         ui: &mut Ui,
         cache: &mut CommonMarkCache,
         options: &CommonMarkOptions,
         max_width: f32,
-    ) {
+        want_scroll_to_active_match: bool,
+    ) -> bool {
+        let intervals = crate::search::code_block_search_intervals(
+            &self.chunks,
+            cache.search_ranges(),
+            cache.active_search_range(),
+        );
+        let scroll_to_active_match = want_scroll_to_active_match
+            .then(|| intervals.iter().find(|(_, is_active)| *is_active))
+            .flatten()
+            .map(|(range, _)| range.clone());
+        let did_scroll = scroll_to_active_match.is_some();
+
         ui.scope(|ui| {
             Self::pre_syntax_highlighting(cache, options, ui);
 
@@ -323,12 +354,29 @@ impl CodeBlock {
                     plain_highlighting(ui, string.as_str())
                 };
 
+                if !intervals.is_empty() {
+                    crate::search::apply_search_highlights(
+                        &mut job,
+                        &intervals,
+                        crate::search::default_match_bg(),
+                        crate::search::default_active_match_bg(),
+                    );
+                }
+
                 job.wrap.max_width = wrap_width;
                 ui.fonts_mut(|f| f.layout_job(job))
             };
 
-            crate::elements::code_block(ui, max_width, &self.content, &mut layout);
+            crate::elements::code_block(
+                ui,
+                max_width,
+                &self.content,
+                &mut layout,
+                scroll_to_active_match,
+            );
         });
+
+        did_scroll
     }
 }
 
@@ -466,6 +514,16 @@ pub struct CommonMarkCache {
     /// Keyboard / programmatic scroll delta applied inside the next
     /// `show_scrollable` call and then cleared.
     pub pending_scroll_delta: egui::Vec2,
+
+    /// Byte ranges (into the source text passed to the viewer) that should
+    /// be highlighted as search matches.
+    search_ranges: Vec<Range<usize>>,
+    /// The currently active (focused) search match, highlighted more
+    /// prominently than the others.
+    active_search_range: Option<Range<usize>>,
+    /// Set by [`CommonMarkCache::scroll_to_active_search_match`] and cleared
+    /// once the render pass that finds and scrolls to the active match runs.
+    pending_scroll_to_active_match: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -481,6 +539,9 @@ impl Default for CommonMarkCache {
             scroll_to_id_target: None,
             has_installed_loaders: false,
             pending_scroll_delta: egui::Vec2::ZERO,
+            search_ranges: Vec::new(),
+            active_search_range: None,
+            pending_scroll_to_active_match: false,
         }
     }
 }
@@ -553,6 +614,58 @@ impl CommonMarkCache {
     /// [`show_scrollable`]: crate::CommonMarkViewer::show_scrollable
     pub fn set_scroll_delta(&mut self, delta: egui::Vec2) {
         self.pending_scroll_delta += delta;
+    }
+
+    /// Set the byte ranges (into the source text passed to the viewer) that
+    /// should be highlighted as search matches. Ranges must fall on valid
+    /// UTF-8 character boundaries.
+    ///
+    /// This is cheap to call every frame (e.g. while the user is typing into
+    /// a search box): highlighting never changes the number of widgets that
+    /// get rendered, so it cannot desync egui's widget IDs.
+    pub fn set_search_ranges(&mut self, ranges: Vec<Range<usize>>) {
+        self.search_ranges = ranges;
+    }
+
+    /// The search match ranges currently set for highlighting.
+    pub fn search_ranges(&self) -> &[Range<usize>] {
+        &self.search_ranges
+    }
+
+    /// Set the active (focused) search match, which is highlighted more
+    /// prominently than the other matches. Pass `None` to clear it.
+    ///
+    /// This does not by itself scroll the view; call
+    /// [`scroll_to_active_search_match`](Self::scroll_to_active_search_match)
+    /// as well if you want that (typically when the user moves to the next/
+    /// previous match).
+    pub fn set_active_search_range(&mut self, range: Option<Range<usize>>) {
+        self.active_search_range = range;
+    }
+
+    /// The currently active (focused) search match, if any.
+    pub fn active_search_range(&self) -> Option<&Range<usize>> {
+        self.active_search_range.as_ref()
+    }
+
+    /// Request that the view scroll so that the active search match (set via
+    /// [`set_active_search_range`](Self::set_active_search_range)) becomes
+    /// visible, centered in the viewport where possible. The request is
+    /// consumed by the next render.
+    pub fn scroll_to_active_search_match(&mut self) {
+        self.pending_scroll_to_active_match = true;
+    }
+
+    /// Whether a scroll to the active search match is pending. Used
+    /// internally to decide whether a cached viewport render needs to be
+    /// refreshed in full in order to locate the match.
+    pub fn has_pending_scroll_to_active_match(&self) -> bool {
+        self.pending_scroll_to_active_match
+    }
+
+    /// Takes (and clears) the pending scroll-to-active-match request.
+    pub fn take_pending_scroll_to_active_match(&mut self) -> bool {
+        std::mem::take(&mut self.pending_scroll_to_active_match)
     }
 
     /// Clear the cache for all scrollable elements

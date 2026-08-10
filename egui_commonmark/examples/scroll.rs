@@ -15,11 +15,87 @@ struct App {
     cache: CommonMarkCache,
     content: String,
     viewport_cache: bool,
+    search_query: String,
+    search_matches: Vec<std::ops::Range<usize>>,
+    active_match: Option<usize>,
+}
+
+impl App {
+    fn update_search_matches(&mut self) {
+        self.search_matches.clear();
+        if !self.search_query.is_empty() {
+            let query = self.search_query.to_lowercase();
+            let haystack = self.content.to_lowercase();
+            let mut start = 0;
+            while let Some(pos) = haystack[start..].find(&query) {
+                let match_start = start + pos;
+                let match_end = match_start + query.len();
+                self.search_matches.push(match_start..match_end);
+                start = match_end;
+            }
+        }
+        self.active_match = if self.search_matches.is_empty() {
+            None
+        } else {
+            Some(0)
+        };
+        self.cache.set_search_ranges(self.search_matches.clone());
+        self.sync_active_match();
+    }
+
+    fn sync_active_match(&mut self) {
+        self.cache.set_active_search_range(
+            self.active_match
+                .and_then(|i| self.search_matches.get(i))
+                .cloned(),
+        );
+    }
+
+    fn go_to_match(&mut self, delta: isize) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let len = self.search_matches.len() as isize;
+        let current = self.active_match.map(|i| i as isize).unwrap_or(0);
+        let next = (current + delta).rem_euclid(len);
+        self.active_match = Some(next as usize);
+        self.sync_active_match();
+        self.cache.scroll_to_active_search_match();
+    }
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.set_min_height(512.0);
+
+        egui::Panel::top("search_bar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Search:");
+                let response = ui.text_edit_singleline(&mut self.search_query);
+                if response.changed() {
+                    self.update_search_matches();
+                }
+                let enter_pressed =
+                    response.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+
+                let match_count = self.search_matches.len();
+                ui.label(match self.active_match {
+                    Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
+                    _ => format!("0/{match_count}"),
+                });
+
+                if ui.button("Previous").clicked()
+                    || (enter_pressed && ui.input(|i| i.modifiers.shift))
+                {
+                    self.go_to_match(-1);
+                }
+                if ui.button("Next").clicked()
+                    || (enter_pressed && !ui.input(|i| i.modifiers.shift))
+                {
+                    self.go_to_match(1);
+                }
+            });
+        });
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
@@ -100,6 +176,9 @@ fn main() -> eframe::Result {
                 cache: CommonMarkCache::default(),
                 content,
                 viewport_cache,
+                search_query: String::new(),
+                search_matches: Vec::new(),
+                active_match: None,
             }))
         }),
     )

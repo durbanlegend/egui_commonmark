@@ -608,12 +608,14 @@ impl CommonMarkViewerInternal {
                         self.code_block = Some(CodeBlock {
                             lang: Some(lang.to_string()),
                             content: "".to_string(),
+                            chunks: Vec::new(),
                         });
                     }
                     pulldown_cmark::CodeBlockKind::Indented => {
                         self.code_block = Some(CodeBlock {
                             lang: None,
                             content: "".to_string(),
+                            chunks: Vec::new(),
                         });
                     }
                 }
@@ -836,14 +838,16 @@ impl CommonMarkViewerInternal {
         if let Some(block) = self.code_block.take() {
             let content = block.content;
 
+            // Compile-time embedded markdown has no live search-match state to
+            // track, so `chunks` is left empty and scrolling is never requested.
             stream.extend(if let Some(lang) = block.lang {
                 quote!(egui_commonmark_backend::CodeBlock {
-                    lang: Some(#lang.to_owned()), content: #content.to_owned()}
-                    .end(ui, #cache, &options, max_width);)
+                    lang: Some(#lang.to_owned()), content: #content.to_owned(), chunks: Vec::new()}
+                    .end(ui, #cache, &options, max_width, false);)
             } else {
                 quote!(egui_commonmark_backend::CodeBlock {
-                    lang: None, content: #content.to_owned()}
-                    .end(ui, #cache, &options, max_width);)
+                    lang: None, content: #content.to_owned(), chunks: Vec::new()}
+                    .end(ui, #cache, &options, max_width, false);)
             });
 
             stream.extend(self.line.try_insert_end());

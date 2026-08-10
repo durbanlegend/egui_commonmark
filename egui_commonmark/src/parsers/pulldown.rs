@@ -9,6 +9,9 @@ use crate::List;
 use egui_commonmark_backend::elements::*;
 use egui_commonmark_backend::misc::*;
 use egui_commonmark_backend::pulldown::*;
+use egui_commonmark_backend::search::{
+    default_active_match_bg, default_match_bg, search_intervals,
+};
 use pulldown_cmark::{CowStr, HeadingLevel};
 
 /// Newline logic is constructed by the following:
@@ -88,6 +91,11 @@ pub struct CommonMarkViewerInternal {
     /// still loading). When true, split points are discarded and the full render
     /// repeats next frame until all images have stable heights.
     any_image_loading: bool,
+    /// Taken from [`CommonMarkCache::take_pending_scroll_to_active_match`] at
+    /// the start of a render pass. When true, the renderer scrolls to (and
+    /// centers) the active search match the moment it is found, then clears
+    /// this flag so it only happens once per pass.
+    want_scroll_to_active_match: bool,
 }
 
 pub(crate) struct CheckboxClickEvent {
@@ -113,6 +121,7 @@ impl CommonMarkViewerInternal {
             checkbox_events: Vec::new(),
             deferred_scroll_to_heading: None,
             any_image_loading: false,
+            want_scroll_to_active_match: false,
         }
     }
 }
@@ -143,6 +152,7 @@ impl CommonMarkViewerInternal {
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
         self.any_image_loading = false;
+        self.want_scroll_to_active_match = cache.take_pending_scroll_to_active_match();
         let max_width = options.max_width(ui);
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -292,6 +302,20 @@ impl CommonMarkViewerInternal {
                     apply_pending_scroll_delta(cache, ui);
                 });
             return;
+        }
+
+        if cache.has_pending_scroll_to_active_match() {
+            // The active match's position isn't tracked incrementally (unlike
+            // heading anchors), because it can change every time the user
+            // steps to the next/previous result without the document or
+            // available width changing (which would otherwise invalidate
+            // this cache naturally). Force one full render so the match can
+            // be located and scrolled to; subsequent frames go back to the
+            // cheap viewport-only path once the scroll position has settled.
+            let sc = scroll_cache(cache, &source_id);
+            sc.page_size = None;
+            sc.split_points.clear();
+            sc.heading_y_positions.clear();
         }
 
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
@@ -716,22 +740,22 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Event::Start(tag) => self.start_tag(ui, tag, cache, options),
             pulldown_cmark::Event::End(tag) => self.end_tag(ui, tag, cache, options, max_width),
             pulldown_cmark::Event::Text(text) => {
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
             }
             pulldown_cmark::Event::Code(text) => {
                 self.text_style.code = true;
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
                 self.text_style.code = false;
             }
             pulldown_cmark::Event::InlineHtml(text) => {
-                self.event_text(text, ui);
+                self.event_text(text, src_span, ui, cache);
             }
 
             pulldown_cmark::Event::Html(text) => {
                 if options.html_fn.is_some() {
                     self.html_block.push_str(&text);
                 } else {
-                    self.event_text(text, ui);
+                    self.event_text(text, src_span, ui, cache);
                 }
             }
             pulldown_cmark::Event::FootnoteReference(footnote) => {
@@ -773,16 +797,41 @@ impl CommonMarkViewerInternal {
         }
     }
 
-    fn event_text(&mut self, text: CowStr, ui: &mut Ui) {
-        let rich_text = self.text_style.to_richtext(ui, &text);
+    fn event_text(
+        &mut self,
+        text: CowStr,
+        src_span: Range<usize>,
+        ui: &mut Ui,
+        cache: &mut CommonMarkCache,
+    ) {
         if let Some(image) = &mut self.image {
-            image.alt_text.push(rich_text);
+            image.alt_text.push(self.text_style.to_richtext(ui, &text));
         } else if let Some(block) = &mut self.code_block {
-            block.content.push_str(&text);
+            block.push_text(&text, src_span);
         } else if let Some(link) = &mut self.link {
-            link.text.push(rich_text);
+            link.text.push(self.text_style.to_richtext(ui, &text));
         } else {
-            ui.label(rich_text);
+            let rich_text = self.text_style.to_richtext(ui, &text);
+            let intervals = search_intervals(
+                cache.search_ranges(),
+                cache.active_search_range(),
+                &src_span,
+                text.len(),
+            );
+            let (_, active_rect) = label_with_search_highlight(
+                ui,
+                rich_text,
+                &intervals,
+                default_match_bg(),
+                default_active_match_bg(),
+            );
+
+            if self.want_scroll_to_active_match
+                && let Some(rect) = active_rect
+            {
+                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                self.want_scroll_to_active_match = false;
+            }
         }
     }
 
@@ -830,12 +879,14 @@ impl CommonMarkViewerInternal {
                         self.code_block = Some(crate::CodeBlock {
                             lang: Some(lang.to_string()),
                             content: "".to_string(),
+                            chunks: Vec::new(),
                         });
                     }
                     pulldown_cmark::CodeBlockKind::Indented => {
                         self.code_block = Some(crate::CodeBlock {
                             lang: None,
                             content: "".to_string(),
+                            chunks: Vec::new(),
                         });
                     }
                 }
@@ -1010,7 +1061,16 @@ impl CommonMarkViewerInternal {
         max_width: f32,
     ) {
         if let Some(block) = self.code_block.take() {
-            block.end(ui, cache, options, max_width);
+            let scrolled = block.end(
+                ui,
+                cache,
+                options,
+                max_width,
+                self.want_scroll_to_active_match,
+            );
+            if scrolled {
+                self.want_scroll_to_active_match = false;
+            }
             self.line.try_insert_end(ui);
         }
     }

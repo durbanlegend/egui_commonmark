@@ -1,5 +1,16 @@
 # egui_commonmark changelog
 
+## Unreleased
+
+### Added
+
+- Search-match highlighting via `CommonMarkCache::set_search_ranges` and
+  `set_active_search_range`. Matches are highlighted inside body text *and*
+  fenced/indented code blocks (including with syntax highlighting enabled).
+  Call `CommonMarkCache::scroll_to_active_search_match` to scroll (and
+  center) the currently active match into view, including when using
+  `show_scrollable`'s viewport cache.
+
 ## 0.25.0 - 2026-08-05
 
 ### Changed
