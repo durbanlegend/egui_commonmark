@@ -201,25 +201,55 @@ impl Style {
 pub struct Link {
     pub destination: String,
     pub text: Vec<RichText>,
+    /// For each accumulated `text` piece, its local byte range within the
+    /// final rendered job's text paired with its byte range in the original
+    /// source. Used to translate global search match ranges into positions
+    /// local to this link's rendered text.
+    pub chunks: Vec<(Range<usize>, Range<usize>)>,
 }
 
 impl Link {
+    /// Append a piece of link text, recording its source span so search
+    /// matches can later be mapped back onto it.
+    pub fn push_text(&mut self, text: RichText, src_span: Range<usize>) {
+        let local_start: usize = self.text.iter().map(|t| t.text().len()).sum();
+        let local_end = local_start + text.text().len();
+        self.chunks.push((local_start..local_end, src_span));
+        self.text.push(text);
+    }
+
+    /// Renders the link. If `want_scroll_to_active_match` is true and the
+    /// currently active search match falls inside this link's text, the view
+    /// is scrolled (centering the link) and `true` is returned so the caller
+    /// knows the request has been fulfilled.
     pub fn end(
         self,
         ui: &mut Ui,
         cache: &mut CommonMarkCache,
         options: &CommonMarkOptions,
         scroll_to_heading: &mut Option<String>,
-    ) {
-        let Self { destination, text } = self;
+        want_scroll_to_active_match: bool,
+    ) -> bool {
+        let Self {
+            destination,
+            text,
+            chunks,
+        } = self;
 
         // When a link wraps an image (`[![alt](img)](url)`), all text events are captured
         // by the image widget and link.text is never populated. Rendering an empty Label in
         // a wrapping layout resets cursor.min.x to 0, superimposing subsequent elements on
         // the image that was just drawn. Nothing to render, so return early.
         if text.is_empty() {
-            return;
+            return false;
         }
+
+        let intervals = crate::search::chunked_search_intervals(
+            &chunks,
+            cache.search_ranges(),
+            cache.active_search_range(),
+        );
+        let has_active_match = intervals.iter().any(|(_, is_active)| *is_active);
 
         let mut layout_job = LayoutJob::default();
         for t in text {
@@ -230,19 +260,38 @@ impl Link {
                 egui::Align::LEFT,
             );
         }
-        if cache.link_hooks().contains_key(&destination) {
+        if !intervals.is_empty() {
+            crate::search::apply_search_highlights(
+                &mut layout_job,
+                &intervals,
+                crate::search::default_match_bg(),
+                crate::search::default_active_match_bg(),
+            );
+        }
+
+        let response = if cache.link_hooks().contains_key(&destination) {
             let ui_link = ui.link(layout_job);
             if ui_link.clicked() || ui_link.middle_clicked() {
                 cache.link_hooks_mut().insert(destination, true);
             }
+            ui_link
         } else if options.enable_scroll_to_heading
             && let Some(stripped) = destination.strip_prefix("#")
         {
-            if ui.link(layout_job).clicked() {
+            let response = ui.link(layout_job);
+            if response.clicked() {
                 scroll_to_heading.replace(stripped.to_string());
             };
+            response
         } else {
-            ui.hyperlink_to(layout_job, destination);
+            ui.hyperlink_to(layout_job, destination)
+        };
+
+        if want_scroll_to_active_match && has_active_match {
+            ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
+            true
+        } else {
+            false
         }
     }
 }
@@ -333,7 +382,7 @@ impl CodeBlock {
         max_width: f32,
         want_scroll_to_active_match: bool,
     ) -> bool {
-        let intervals = crate::search::code_block_search_intervals(
+        let intervals = crate::search::chunked_search_intervals(
             &self.chunks,
             cache.search_ranges(),
             cache.active_search_range(),

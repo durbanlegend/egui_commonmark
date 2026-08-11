@@ -21,24 +21,50 @@ struct App {
 }
 
 impl App {
+    /// Recomputes `search_matches` from the *rendered* text only (via
+    /// pulldown-cmark's `Text`/`Code` events), so link destinations,
+    /// heading `{#id}` attribute syntax, and other non-visible markdown
+    /// syntax are never matched (a naive substring search over the raw
+    /// source would, for example, double-count "500" in
+    /// `[Section 500](#section-500)`: once in the visible text, once in the
+    /// URL).
+    ///
+    /// Does not move the active match or scroll anywhere: navigation only
+    /// happens once the user explicitly commits via Next/Previous/Enter
+    /// (see `go_to_match`), so that live highlights appear as you type
+    /// without the view jumping around underneath you.
     fn update_search_matches(&mut self) {
         self.search_matches.clear();
         if !self.search_query.is_empty() {
             let query = self.search_query.to_lowercase();
-            let haystack = self.content.to_lowercase();
-            let mut start = 0;
-            while let Some(pos) = haystack[start..].find(&query) {
-                let match_start = start + pos;
-                let match_end = match_start + query.len();
-                self.search_matches.push(match_start..match_end);
-                start = match_end;
+            // Mirror the options CommonMarkViewer itself parses with,
+            // including heading attributes since `enable_scroll_to_heading`
+            // is set below (otherwise `{#section-500}` would remain in the
+            // heading's Text event and get matched too).
+            let options = pulldown_cmark::Options::ENABLE_STRIKETHROUGH
+                | pulldown_cmark::Options::ENABLE_TASKLISTS
+                | pulldown_cmark::Options::ENABLE_TABLES
+                | pulldown_cmark::Options::ENABLE_FOOTNOTES
+                | pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES;
+            let parser = pulldown_cmark::Parser::new_ext(&self.content, options).into_offset_iter();
+            for (event, range) in parser {
+                let text = match event {
+                    pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text) => text,
+                    _ => continue,
+                };
+                let haystack = text.to_lowercase();
+                let mut start = 0;
+                while let Some(pos) = haystack[start..].find(&query) {
+                    let match_start = range.start + start + pos;
+                    let match_end = match_start + query.len();
+                    self.search_matches.push(match_start..match_end);
+                    start += pos + query.len();
+                }
             }
         }
-        self.active_match = if self.search_matches.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        // Leave the active match unset; go_to_match() picks a starting point
+        // (first or last match) the first time the user navigates.
+        self.active_match = None;
         self.cache.set_search_ranges(self.search_matches.clone());
         self.sync_active_match();
     }
@@ -56,8 +82,13 @@ impl App {
             return;
         }
         let len = self.search_matches.len() as isize;
-        let current = self.active_match.map(|i| i as isize).unwrap_or(0);
-        let next = (current + delta).rem_euclid(len);
+        let next = match self.active_match {
+            Some(i) => (i as isize + delta).rem_euclid(len),
+            // First navigation after a fresh search: start at the first
+            // match for Next, the last one for Previous.
+            None if delta >= 0 => 0,
+            None => len - 1,
+        };
         self.active_match = Some(next as usize);
         self.sync_active_match();
         self.cache.scroll_to_active_search_match();

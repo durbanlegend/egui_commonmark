@@ -135,11 +135,11 @@ pub fn apply_search_highlights(
     job.sections = new_sections;
 }
 
-/// Like [`search_intervals`], but for a code block's content, which may be
-/// assembled from multiple markdown text events (`chunks`), each with its
-/// own local byte range within `content` and source byte range in the
-/// original document.
-pub fn code_block_search_intervals(
+/// Like [`search_intervals`], but for content assembled from multiple
+/// markdown text events (`chunks`), each with its own local byte range
+/// within the final rendered text and source byte range in the original
+/// document. Used for both code blocks and link text.
+pub fn chunked_search_intervals(
     chunks: &[(Range<usize>, Range<usize>)],
     ranges: &[Range<usize>],
     active: Option<&Range<usize>>,

@@ -871,7 +871,7 @@ impl CommonMarkViewerInternal {
         } else if let Some(block) = &mut self.code_block {
             block.push_text(&text, src_span);
         } else if let Some(link) = &mut self.link {
-            link.text.push(self.text_style.to_richtext(ui, &text));
+            link.push_text(self.text_style.to_richtext(ui, &text), src_span);
         } else {
             let rich_text = self.text_style.to_richtext(ui, &text);
             let intervals = search_intervals(
@@ -999,7 +999,7 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Tag::Link { dest_url, .. } => {
                 self.link = Some(crate::Link {
                     destination: dest_url.to_string(),
-                    text: Vec::new(),
+                    ..Default::default()
                 });
             }
             pulldown_cmark::Tag::Image { dest_url, .. } => {
@@ -1089,7 +1089,16 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Link => {
                 if let Some(link) = self.link.take() {
-                    link.end(ui, cache, options, &mut self.deferred_scroll_to_heading);
+                    let scrolled = link.end(
+                        ui,
+                        cache,
+                        options,
+                        &mut self.deferred_scroll_to_heading,
+                        self.want_scroll_to_active_match,
+                    );
+                    if scrolled {
+                        self.want_scroll_to_active_match = false;
+                    }
                 }
             }
             pulldown_cmark::TagEnd::Image => {
