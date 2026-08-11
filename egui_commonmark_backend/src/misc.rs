@@ -41,6 +41,13 @@ pub struct CommonMarkOptions<'f> {
     /// document each frame. When `false` (the default) the full document is
     /// rendered every frame and egui clips what is off-screen.
     pub use_viewport_cache: bool,
+    /// Background colour for passive search matches. When `None`, a
+    /// theme-derived default is used (see [`crate::search::default_match_bg`]).
+    pub search_match_bg: Option<egui::Color32>,
+    /// Background colour for the active (focused) search match. When
+    /// `None`, a theme-derived default is used (see
+    /// [`crate::search::default_active_match_bg`]).
+    pub search_active_match_bg: Option<egui::Color32>,
 }
 
 impl std::fmt::Debug for CommonMarkOptions<'_> {
@@ -63,6 +70,8 @@ impl std::fmt::Debug for CommonMarkOptions<'_> {
             )
             .field("alerts", &self.alerts)
             .field("mutable", &self.mutable)
+            .field("search_match_bg", &self.search_match_bg)
+            .field("search_active_match_bg", &self.search_active_match_bg)
             .finish()
     }
 }
@@ -86,6 +95,8 @@ impl Default for CommonMarkOptions<'_> {
             html_fn: None,
             enable_scroll_to_heading: false,
             use_viewport_cache: false,
+            search_match_bg: None,
+            search_active_match_bg: None,
         }
     }
 }
@@ -114,6 +125,20 @@ impl CommonMarkOptions<'_> {
         } else {
             max_width
         }
+    }
+
+    /// The background colour to use for passive search matches: the
+    /// explicit override if one was set, otherwise a theme-derived default.
+    pub fn search_match_bg(&self, ui: &Ui) -> egui::Color32 {
+        self.search_match_bg
+            .unwrap_or_else(|| crate::search::default_match_bg(ui.visuals()))
+    }
+
+    /// The background colour to use for the active search match: the
+    /// explicit override if one was set, otherwise a theme-derived default.
+    pub fn search_active_match_bg(&self, ui: &Ui) -> egui::Color32 {
+        self.search_active_match_bg
+            .unwrap_or_else(|| crate::search::default_active_match_bg(ui.visuals()))
     }
 }
 
@@ -264,8 +289,8 @@ impl Link {
             crate::search::apply_search_highlights(
                 &mut layout_job,
                 &intervals,
-                crate::search::default_match_bg(),
-                crate::search::default_active_match_bg(),
+                options.search_match_bg(ui),
+                options.search_active_match_bg(ui),
             );
         }
 
@@ -407,8 +432,8 @@ impl CodeBlock {
                     crate::search::apply_search_highlights(
                         &mut job,
                         &intervals,
-                        crate::search::default_match_bg(),
-                        crate::search::default_active_match_bg(),
+                        options.search_match_bg(ui),
+                        options.search_active_match_bg(ui),
                     );
                 }
 
@@ -685,6 +710,21 @@ impl CommonMarkCache {
     /// The search match ranges currently set for highlighting.
     pub fn search_ranges(&self) -> &[Range<usize>] {
         &self.search_ranges
+    }
+
+    /// Approximate the source byte offset of whatever is currently at the
+    /// top of the viewport for the given [`show_scrollable`](crate::CommonMarkViewer::show_scrollable)
+    /// instance. Useful for implementing "search from the current position"
+    /// (like a typical find-in-page: jump to the nearest match at or after
+    /// what's currently on screen, instead of always restarting from the top
+    /// of the document).
+    ///
+    /// Returns `None` if nothing has been rendered for `source_id` yet, or
+    /// if it was rendered with [`viewport_cache`](crate::CommonMarkViewer::viewport_cache)
+    /// disabled (in which case the whole document is visible-ish anyway).
+    pub fn viewport_start_byte_offset(&self, source_id: impl egui::AsId) -> Option<usize> {
+        let sc = self.scroll.get(&egui::Id::new(source_id))?;
+        sc.byte_offset_for_virtual_y(sc.last_viewport_top_y)
     }
 
     /// Set the active (focused) search match, which is highlighted more

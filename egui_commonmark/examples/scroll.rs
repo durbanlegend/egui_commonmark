@@ -29,10 +29,14 @@ impl App {
     /// `[Section 500](#section-500)`: once in the visible text, once in the
     /// URL).
     ///
-    /// Does not move the active match or scroll anywhere: navigation only
-    /// happens once the user explicitly commits via Next/Previous/Enter
-    /// (see `go_to_match`), so that live highlights appear as you type
-    /// without the view jumping around underneath you.
+    /// Recomputes `search_matches` on every keystroke and immediately
+    /// advances to the nearest match at or after wherever the user is
+    /// currently scrolled to (wrapping to the first match if there is none
+    /// after that point), mirroring how a normal "find in page" behaves.
+    /// Recomputation and the resulting scroll are both cheap (see
+    /// `CommonMarkCache::scroll_to_active_search_match`'s docs: this never
+    /// forces a full document re-render), so this stays responsive even for
+    /// this fairly large (~275 KB) document.
     fn update_search_matches(&mut self) {
         self.search_matches.clear();
         if !self.search_query.is_empty() {
@@ -62,11 +66,26 @@ impl App {
                 }
             }
         }
-        // Leave the active match unset; go_to_match() picks a starting point
-        // (first or last match) the first time the user navigates.
-        self.active_match = None;
         self.cache.set_search_ranges(self.search_matches.clone());
+
+        if self.search_matches.is_empty() {
+            self.active_match = None;
+            self.sync_active_match();
+            return;
+        }
+
+        let cursor = self
+            .cache
+            .viewport_start_byte_offset("scroll_example")
+            .unwrap_or(0);
+        let nearest = self
+            .search_matches
+            .iter()
+            .position(|r| r.start >= cursor)
+            .unwrap_or(0);
+        self.active_match = Some(nearest);
         self.sync_active_match();
+        self.cache.scroll_to_active_search_match();
     }
 
     fn sync_active_match(&mut self) {
@@ -106,8 +125,16 @@ impl eframe::App for App {
                 if response.changed() {
                     self.update_search_matches();
                 }
-                let enter_pressed =
-                    response.lost_focus() && ui.ctx().input(|i| i.key_pressed(egui::Key::Enter));
+                // Checked unconditionally (not gated on the text edit still
+                // having focus): a single-line TextEdit surrenders focus the
+                // moment Enter is pressed, so `response.has_focus()` would
+                // already be false here. We re-request focus below so that
+                // repeated Enter presses keep working without having to
+                // click back into the box each time.
+                let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if enter_pressed {
+                    response.request_focus();
+                }
 
                 let match_count = self.search_matches.len();
                 ui.label(match self.active_match {

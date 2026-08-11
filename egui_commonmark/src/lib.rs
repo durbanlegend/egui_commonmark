@@ -243,6 +243,24 @@ impl<'f> CommonMarkViewer<'f> {
         self
     }
 
+    /// Override the background colour used to highlight passive (non-active)
+    /// search matches (see [`CommonMarkCache::set_search_ranges`]). By
+    /// default a theme-derived colour is used, so this is only needed if you
+    /// want something else.
+    pub fn search_match_color(mut self, color: egui::Color32) -> Self {
+        self.options.search_match_bg = Some(color);
+        self
+    }
+
+    /// Override the background colour used to highlight the active (focused)
+    /// search match (see [`CommonMarkCache::set_active_search_range`]). By
+    /// default a theme-derived colour is used, so this is only needed if you
+    /// want something else.
+    pub fn search_active_match_color(mut self, color: egui::Color32) -> Self {
+        self.options.search_active_match_bg = Some(color);
+        self
+    }
+
     /// Shows rendered markdown
     pub fn show(
         self,

@@ -18,17 +18,27 @@ use egui::epaint::text::ByteRangeExt;
 use egui::text::{ByteIndex, LayoutJob, LayoutSection};
 use std::ops::Range;
 
-/// The default background colour for a passive (non-active) search match.
-/// Semi-transparent so that it still lets any existing syntax colour show
-/// through.
-pub fn default_match_bg() -> Color32 {
-    Color32::from_rgba_unmultiplied(255, 220, 60, 90)
+/// The default background colour for a passive (non-active) search match:
+/// the current theme's warning colour, semi-transparent so that it still
+/// lets any existing syntax colour show through. Themed (rather than a fixed
+/// literal) so that custom [`egui::Visuals`] are respected; callers that want
+/// something else can override it (see
+/// [`crate::misc::CommonMarkOptions::search_match_bg`]).
+pub fn default_match_bg(visuals: &egui::Visuals) -> Color32 {
+    with_alpha(visuals.warn_fg_color, 90)
 }
 
 /// The default background colour for the currently active (focused) search
-/// match.
-pub fn default_active_match_bg() -> Color32 {
-    Color32::from_rgba_unmultiplied(255, 140, 0, 150)
+/// match: the current theme's error colour (more attention-grabbing than the
+/// passive match colour), semi-transparent. See
+/// [`crate::misc::CommonMarkOptions::search_active_match_bg`] for overriding
+/// it.
+pub fn default_active_match_bg(visuals: &egui::Visuals) -> Color32 {
+    with_alpha(visuals.error_fg_color, 150)
+}
+
+fn with_alpha(color: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
 /// Given the set of global search match byte ranges (in the original source

@@ -19,6 +19,12 @@ pub struct ScrollableCache {
     /// Populated during the full render; used by the viewport path to
     /// scroll to headings outside the currently rendered slice.
     pub heading_y_positions: HashMap<String, f32>,
+    /// The most recent viewport top y (virtual, content-relative), recorded
+    /// every frame the cheap viewport-only path renders. Lets callers
+    /// approximate "what's currently visible" (e.g. to implement search
+    /// that starts from the current scroll position) via
+    /// [`Self::byte_offset_for_virtual_y`].
+    pub last_viewport_top_y: f32,
 }
 
 impl ScrollableCache {
@@ -52,6 +58,19 @@ impl ScrollableCache {
             .find(|(_, _, _, span)| span.start <= offset)
             .map(|(_, vstart, _, _)| vstart.y)
             .or_else(|| self.split_points.first().map(|(_, vstart, _, _)| vstart.y))
+    }
+
+    /// The inverse of [`Self::virtual_y_for_byte_offset`]: approximate the
+    /// source byte offset of whatever is at (or just before) the given
+    /// virtual y, using the same split points. Returns `None` only if there
+    /// are no split points at all yet.
+    pub fn byte_offset_for_virtual_y(&self, y: f32) -> Option<usize> {
+        self.split_points
+            .iter()
+            .rev()
+            .find(|(_, vstart, _, _)| vstart.y <= y)
+            .map(|(_, _, _, span)| span.start)
+            .or_else(|| self.split_points.first().map(|(_, _, _, span)| span.start))
     }
 }
 

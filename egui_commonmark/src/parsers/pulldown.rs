@@ -9,9 +9,7 @@ use crate::List;
 use egui_commonmark_backend::elements::*;
 use egui_commonmark_backend::misc::*;
 use egui_commonmark_backend::pulldown::*;
-use egui_commonmark_backend::search::{
-    default_active_match_bg, default_match_bg, search_intervals,
-};
+use egui_commonmark_backend::search::search_intervals;
 use pulldown_cmark::{CowStr, HeadingLevel};
 
 /// Newline logic is constructed by the following:
@@ -435,6 +433,7 @@ impl CommonMarkViewerInternal {
                     let render_below = viewport.max.y + viewport_height;
                     let (skip_height, skip_count, take_count) = {
                         let scroll_cache = scroll_cache(cache, &source_id);
+                        scroll_cache.last_viewport_top_y = viewport.min.y;
                         let preceding_split = scroll_cache
                             .split_points
                             .iter()
@@ -802,22 +801,22 @@ impl CommonMarkViewerInternal {
             pulldown_cmark::Event::Start(tag) => self.start_tag(ui, tag, cache, options),
             pulldown_cmark::Event::End(tag) => self.end_tag(ui, tag, cache, options, max_width),
             pulldown_cmark::Event::Text(text) => {
-                self.event_text(text, src_span, ui, cache);
+                self.event_text(text, src_span, ui, cache, options);
             }
             pulldown_cmark::Event::Code(text) => {
                 self.text_style.code = true;
-                self.event_text(text, src_span, ui, cache);
+                self.event_text(text, src_span, ui, cache, options);
                 self.text_style.code = false;
             }
             pulldown_cmark::Event::InlineHtml(text) => {
-                self.event_text(text, src_span, ui, cache);
+                self.event_text(text, src_span, ui, cache, options);
             }
 
             pulldown_cmark::Event::Html(text) => {
                 if options.html_fn.is_some() {
                     self.html_block.push_str(&text);
                 } else {
-                    self.event_text(text, src_span, ui, cache);
+                    self.event_text(text, src_span, ui, cache, options);
                 }
             }
             pulldown_cmark::Event::FootnoteReference(footnote) => {
@@ -865,6 +864,7 @@ impl CommonMarkViewerInternal {
         src_span: Range<usize>,
         ui: &mut Ui,
         cache: &mut CommonMarkCache,
+        options: &CommonMarkOptions,
     ) {
         if let Some(image) = &mut self.image {
             image.alt_text.push(self.text_style.to_richtext(ui, &text));
@@ -884,8 +884,8 @@ impl CommonMarkViewerInternal {
                 ui,
                 rich_text,
                 &intervals,
-                default_match_bg(),
-                default_active_match_bg(),
+                options.search_match_bg(ui),
+                options.search_active_match_bg(ui),
             );
 
             if self.want_scroll_to_active_match
