@@ -8,11 +8,51 @@ use std::ops::Range;
 pub struct ScrollableCache {
     pub available_size: Vec2,
     pub page_size: Option<Vec2>,
-    pub split_points: Vec<(usize, Pos2, Pos2)>,
+    /// `(event_index, vstart, vend, src_span)` for each top-level block
+    /// (paragraph/heading/code block) at a "safe" restart boundary.
+    /// `src_span` is that block's byte range in the source text, which lets
+    /// [`Self::virtual_y_for_byte_offset`] approximate the on-screen
+    /// position of arbitrary byte offsets (e.g. search matches) without
+    /// needing a fresh full render.
+    pub split_points: Vec<(usize, Pos2, Pos2, Range<usize>)>,
     /// Heading slug → virtual y (content-relative; 0 = document top).
     /// Populated during the full render; used by the viewport path to
     /// scroll to headings outside the currently rendered slice.
     pub heading_y_positions: HashMap<String, f32>,
+}
+
+impl ScrollableCache {
+    /// Approximate the virtual y (content-relative; 0 = document top) of a
+    /// byte offset in the source text, using the split points collected
+    /// during the last full render. This never requires a fresh render: at
+    /// worst (e.g. a byte offset inside a large, untracked container like a
+    /// list or table) it falls back to the nearest preceding tracked block,
+    /// which is the same granularity the viewport-slice calculation itself
+    /// already uses.
+    ///
+    /// Returns `None` only if there are no split points at all yet (i.e. no
+    /// full render has happened), in which case the caller has no choice
+    /// but to wait for one.
+    pub fn virtual_y_for_byte_offset(&self, offset: usize) -> Option<f32> {
+        if let Some((_, vstart, _, _)) = self
+            .split_points
+            .iter()
+            .find(|(_, _, _, span)| span.contains(&offset))
+        {
+            return Some(vstart.y);
+        }
+
+        // Not inside any tracked block (e.g. it's inside a list/table/
+        // blockquote, which aren't tracked individually) -- use the nearest
+        // preceding tracked block as a reasonable approximation, same as
+        // `show_scrollable`'s own slice calculation does.
+        self.split_points
+            .iter()
+            .rev()
+            .find(|(_, _, _, span)| span.start <= offset)
+            .map(|(_, vstart, _, _)| vstart.y)
+            .or_else(|| self.split_points.first().map(|(_, vstart, _, _)| vstart.y))
+    }
 }
 
 pub type EventIteratorItem<'e> = (usize, (pulldown_cmark::Event<'e>, Range<usize>));

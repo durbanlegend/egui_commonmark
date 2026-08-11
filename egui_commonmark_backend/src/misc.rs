@@ -524,6 +524,11 @@ pub struct CommonMarkCache {
     /// Set by [`CommonMarkCache::scroll_to_active_search_match`] and cleared
     /// once the render pass that finds and scrolls to the active match runs.
     pending_scroll_to_active_match: bool,
+    /// Number of consecutive internal retries (viewport blind-scroll not
+    /// yet having brought the match into a rendered slice). Bounds an
+    /// otherwise-unlikely non-convergent loop; reset whenever the user
+    /// requests a fresh scroll via [`CommonMarkCache::scroll_to_active_search_match`].
+    pending_scroll_to_active_match_retries: u8,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -542,6 +547,7 @@ impl Default for CommonMarkCache {
             search_ranges: Vec::new(),
             active_search_range: None,
             pending_scroll_to_active_match: false,
+            pending_scroll_to_active_match_retries: 0,
         }
     }
 }
@@ -652,20 +658,39 @@ impl CommonMarkCache {
     /// [`set_active_search_range`](Self::set_active_search_range)) becomes
     /// visible, centered in the viewport where possible. The request is
     /// consumed by the next render.
+    ///
+    /// This never forces a full re-render of the document, even in
+    /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable)'s
+    /// viewport-cached mode: if the match isn't already in the currently
+    /// rendered slice, the view is scrolled toward its approximate position
+    /// (using data already collected by the last full render) and refined
+    /// precisely over the following frame or two as the real slice comes
+    /// into view.
     pub fn scroll_to_active_search_match(&mut self) {
         self.pending_scroll_to_active_match = true;
+        self.pending_scroll_to_active_match_retries = 0;
     }
 
-    /// Whether a scroll to the active search match is pending. Used
-    /// internally to decide whether a cached viewport render needs to be
-    /// refreshed in full in order to locate the match.
-    pub fn has_pending_scroll_to_active_match(&self) -> bool {
-        self.pending_scroll_to_active_match
-    }
-
-    /// Takes (and clears) the pending scroll-to-active-match request.
+    /// Takes (and clears) the pending scroll-to-active-match request. Used
+    /// internally by the renderer.
     pub fn take_pending_scroll_to_active_match(&mut self) -> bool {
         std::mem::take(&mut self.pending_scroll_to_active_match)
+    }
+
+    /// Re-arms the pending scroll-to-active-match request for another
+    /// attempt (the match wasn't in the slice rendered this frame), unless
+    /// the retry budget has been exhausted, in which case the request is
+    /// dropped and `false` is returned. Used internally by the renderer to
+    /// bound an otherwise-unlikely non-convergent blind-scroll loop.
+    pub fn retry_scroll_to_active_match(&mut self) -> bool {
+        const MAX_RETRIES: u8 = 8;
+        if self.pending_scroll_to_active_match_retries >= MAX_RETRIES {
+            self.pending_scroll_to_active_match = false;
+            return false;
+        }
+        self.pending_scroll_to_active_match_retries += 1;
+        self.pending_scroll_to_active_match = true;
+        true
     }
 
     /// Clear the cache for all scrollable elements

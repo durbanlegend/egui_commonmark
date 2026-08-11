@@ -140,6 +140,10 @@ fn parser_options_extras(
     result
 }
 
+#[cfg(test)]
+pub(crate) static FULL_RENDER_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 impl CommonMarkViewerInternal {
     /// Be aware that this acquires egui::Context internally.
     /// If split Id is provided then split points will be populated
@@ -151,6 +155,8 @@ impl CommonMarkViewerInternal {
         text: &str,
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
+        #[cfg(test)]
+        FULL_RENDER_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.any_image_loading = false;
         self.want_scroll_to_active_match = cache.take_pending_scroll_to_active_match();
         let max_width = options.max_width(ui);
@@ -177,6 +183,10 @@ impl CommonMarkViewerInternal {
             // Cursor at the visual top of the current block, captured at
             // Start(Block) so that vstart reflects the block top, not its bottom.
             let mut block_start_position: Option<Pos2> = None;
+            // Source byte offset paired with block_start_position, so split
+            // points can also record each block's source span (used to
+            // locate search matches without a fresh full render).
+            let mut block_start_src: Option<usize> = None;
 
             while let Some((index, (e, src_span))) = events.next() {
                 let start_position = ui.next_widget_position();
@@ -192,6 +202,7 @@ impl CommonMarkViewerInternal {
                     );
                 if is_safe_block_start {
                     block_start_position = Some(start_position);
+                    block_start_src = Some(src_span.start);
                 }
 
                 // Record virtual y for each named heading so the viewport path
@@ -224,6 +235,7 @@ impl CommonMarkViewerInternal {
                     self.line.should_end_newline_forced = false;
                 }
 
+                let block_end_src = src_span.end;
                 self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
 
                 if let Some(source_id) = split_points_id
@@ -235,7 +247,7 @@ impl CommonMarkViewerInternal {
                     let split_point_exists = scroll_cache
                         .split_points
                         .iter()
-                        .any(|(i, _, _)| *i == index);
+                        .any(|(i, _, _, _)| *i == index);
 
                     if !split_point_exists {
                         // Use block_start_position (Start event) not start_position
@@ -243,7 +255,11 @@ impl CommonMarkViewerInternal {
                         let raw_vstart = block_start_position.take().unwrap_or(start_position);
                         let vstart = egui::pos2(raw_vstart.x, raw_vstart.y - content_origin_y);
                         let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
-                        scroll_cache.split_points.push((index, vstart, vend));
+                        let block_src_span =
+                            block_start_src.take().unwrap_or(block_end_src)..block_end_src;
+                        scroll_cache
+                            .split_points
+                            .push((index, vstart, vend, block_src_span));
                     }
                 }
 
@@ -304,20 +320,6 @@ impl CommonMarkViewerInternal {
             return;
         }
 
-        if cache.has_pending_scroll_to_active_match() {
-            // The active match's position isn't tracked incrementally (unlike
-            // heading anchors), because it can change every time the user
-            // steps to the next/previous result without the document or
-            // available width changing (which would otherwise invalidate
-            // this cache naturally). Force one full render so the match can
-            // be located and scrolled to; subsequent frames go back to the
-            // cheap viewport-only path once the scroll position has settled.
-            let sc = scroll_cache(cache, &source_id);
-            sc.page_size = None;
-            sc.split_points.clear();
-            sc.heading_y_positions.clear();
-        }
-
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
@@ -329,6 +331,16 @@ impl CommonMarkViewerInternal {
             scroll_cache(cache, &source_id).available_size = available_size;
             return;
         };
+
+        // Try to fulfil a pending scroll-to-active-match directly from the
+        // slice we're about to render: if the match is already visible (the
+        // common case, e.g. stepping through nearby results), the per-widget
+        // rendering code below finds it and scrolls precisely, with no extra
+        // cost. If it isn't in the rendered slice, `pending_match_scroll_y`
+        // (below) provides a cheap blind scroll toward its approximate
+        // position using data already collected by the last full render —
+        // this never requires re-rendering the whole document.
+        self.want_scroll_to_active_match = cache.take_pending_scroll_to_active_match();
 
         let events = pulldown_cmark::Parser::new_ext(
             text,
@@ -357,6 +369,20 @@ impl CommonMarkViewerInternal {
         };
         let pending_delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
 
+        // Approximate virtual y of the active match, from split points
+        // collected during the last full render (see `ScrollableCache::
+        // virtual_y_for_byte_offset`). `None` only when no full render has
+        // ever populated split points yet, which resolves itself the moment
+        // one does (e.g. on first show, or after a resize/content change).
+        let pending_match_scroll_y: Option<f32> = if self.want_scroll_to_active_match {
+            cache
+                .active_search_range()
+                .map(|r| r.start)
+                .and_then(|start| scroll_cache(cache, &source_id).virtual_y_for_byte_offset(start))
+        } else {
+            None
+        };
+
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             // Elements have different widths, so the scroll area cannot try to shrink to the
@@ -373,6 +399,23 @@ impl CommonMarkViewerInternal {
                         egui::Vec2::ZERO,
                     );
                     ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                }
+                if let Some(y) = pending_match_scroll_y
+                    && (y < viewport.min.y || y > viewport.max.y)
+                {
+                    // The match's approximate block isn't in view yet. Blind
+                    // scroll toward it; once the viewport settles there
+                    // (usually within a frame or two), the per-widget code
+                    // below will find the exact match in the now-visible
+                    // slice and refine the scroll precisely (see
+                    // `want_scroll_to_active_match` handling). If it's
+                    // already in view, skip this so we don't fight with that
+                    // precise scroll.
+                    let r = egui::Rect::from_min_size(
+                        egui::pos2(0.0, ui.next_widget_position().y + y),
+                        egui::Vec2::ZERO,
+                    );
+                    ui.scroll_to_rect(r, Some(egui::Align::Center));
                 }
                 if pending_delta != egui::Vec2::ZERO {
                     ui.scroll_with_delta(pending_delta);
@@ -395,21 +438,23 @@ impl CommonMarkViewerInternal {
                         let preceding_split = scroll_cache
                             .split_points
                             .iter()
-                            .rfind(|(_, _, vend)| vend.y < viewport.min.y)
-                            .copied();
-                        let (_first_event_index, _, first_end_position) =
-                            preceding_split.unwrap_or((0, Pos2::ZERO, Pos2::ZERO));
+                            .rfind(|(_, _, vend, _)| vend.y < viewport.min.y)
+                            .cloned();
+                        let (_first_event_index, _, first_end_position, _) = preceding_split
+                            .clone()
+                            .unwrap_or((0, Pos2::ZERO, Pos2::ZERO, 0..0));
                         let last_event_index = scroll_cache
                             .split_points
                             .iter()
-                            .find(|(_, vstart, _)| vstart.y > render_below)
-                            .map(|(index, _, _)| *index)
+                            .find(|(_, vstart, _, _)| vstart.y > render_below)
+                            .map(|(index, _, _, _)| *index)
                             .unwrap_or(num_rows);
                         let skip_height = first_end_position.y.max(0.0);
                         // When a preceding split was found, its End(Block) is already
                         // accounted for in skip_height — re-processing it would add a
                         // duplicate newline. Start from the next event instead.
-                        let (skip_count, take_count) = if let Some((idx, _, _)) = preceding_split {
+                        let (skip_count, take_count) = if let Some((idx, _, _, _)) = preceding_split
+                        {
                             self.line.should_not_start_newline_forced = false;
                             // last_event_index should always be >= idx because
                             // split-points are ordered, but guard against stale
@@ -419,6 +464,11 @@ impl CommonMarkViewerInternal {
                         } else {
                             (0, last_event_index)
                         };
+                        #[cfg(test)]
+                        eprintln!(
+                            "[instrumentation] viewport=({:.1},{:.1}) render_below={:.1} skip_count={skip_count} take_count={take_count}",
+                            viewport.min.y, viewport.max.y, render_below
+                        );
                         (skip_height, skip_count, take_count)
                     }; // scroll_cache borrow released here
 
@@ -497,9 +547,31 @@ impl CommonMarkViewerInternal {
             sc.heading_y_positions.clear();
         }
 
+        // The active match wasn't inside the slice we just rendered. Re-arm
+        // the request (bounded — see `retry_scroll_to_active_match`); the
+        // blind scroll toward its approximate position (recomputed fresh
+        // next frame from `pending_match_scroll_y`) should bring it into a
+        // rendered slice within a frame or two, entirely within the cheap
+        // viewport-only path. We only ever fall back to a full render if
+        // there are no split points at all to approximate a position from
+        // (e.g. a document with no top-level paragraphs/headings/code
+        // blocks), which is the same data a full render would need to
+        // populate anyway.
+        if self.want_scroll_to_active_match && cache.retry_scroll_to_active_match() {
+            let sc = scroll_cache(cache, &source_id);
+            if sc.split_points.is_empty() {
+                sc.page_size = None;
+            }
+        }
+
         // Invalidate the cache when the available size changes (e.g. window resize).
         let scroll_cache = scroll_cache(cache, &source_id);
         if available_size != scroll_cache.available_size {
+            #[cfg(test)]
+            eprintln!(
+                "[instrumentation] available_size changed: {:?} -> {:?}",
+                scroll_cache.available_size, available_size
+            );
             scroll_cache.available_size = available_size;
             scroll_cache.page_size = None;
             scroll_cache.split_points.clear();
@@ -1080,5 +1152,327 @@ fn apply_pending_scroll_delta(cache: &mut CommonMarkCache, ui: &mut Ui) {
     let delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
     if delta != egui::Vec2::ZERO {
         ui.scroll_with_delta(delta);
+    }
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use super::*;
+    use crate::{CommonMarkCache, CommonMarkViewer};
+    use std::sync::atomic::Ordering;
+
+    fn big_document() -> String {
+        let mut text = String::new();
+        for i in 1..=1024_usize {
+            text += &format!(
+                "\n## Section {i}\n\nThis is section {i}.\n\n```rs\nvec.push({i});\n```\n\n"
+            );
+        }
+        text
+    }
+
+    fn windowed_input() -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn baseline_no_search_state() {
+        let doc = big_document();
+        let mut cache = CommonMarkCache::default();
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+
+        let start = std::time::Instant::now();
+        const FRAMES: usize = 5;
+        for frame in 0..FRAMES {
+            let output = ctx.run_ui(windowed_input(), |ui| {
+                ui.set_min_height(600.0);
+                CommonMarkViewer::new()
+                    .viewport_cache(true)
+                    .show_scrollable("perf_test_doc_baseline", ui, &mut cache, &doc);
+            });
+            output.drop_without_applying_deltas();
+            eprintln!("[baseline] frame {frame} done at {:?}", start.elapsed());
+        }
+        eprintln!("[baseline] total: {:?}", start.elapsed());
+    }
+
+    /// Same as the other tests but with *real* fonts loaded (text shaping is
+    /// close to free with `FontDefinitions::empty()`, which could mask a
+    /// shaping-cache-busting regression). Runs more frames to make any
+    /// per-frame cost creep obvious.
+    fn real_font_run(label: &str, with_matches: bool) {
+        let doc = big_document();
+        let mut cache = CommonMarkCache::default();
+        if with_matches {
+            let query = "push(123)";
+            let mut ranges = Vec::new();
+            let mut start = 0;
+            while let Some(pos) = doc[start..].find(query) {
+                let s = start + pos;
+                ranges.push(s..s + query.len());
+                start = s + query.len();
+            }
+            cache.set_active_search_range(ranges.first().cloned());
+            cache.set_search_ranges(ranges);
+        }
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::default());
+
+        const FRAMES: usize = 20;
+        let mut prev = std::time::Instant::now();
+        let overall_start = prev;
+        for frame in 0..FRAMES {
+            let output = ctx.run_ui(windowed_input(), |ui| {
+                ui.set_min_height(600.0);
+                CommonMarkViewer::new()
+                    .viewport_cache(true)
+                    .show_scrollable("perf_test_doc_real_fonts", ui, &mut cache, &doc);
+            });
+            output.drop_without_applying_deltas();
+            let now = std::time::Instant::now();
+            eprintln!(
+                "[{label}] frame {frame}: {:?} (delta {:?})",
+                now - overall_start,
+                now - prev
+            );
+            prev = now;
+        }
+    }
+
+    #[test]
+    fn real_fonts_no_matches() {
+        real_font_run("real-fonts/no-matches", false);
+    }
+
+    #[test]
+    fn real_fonts_with_matches() {
+        real_font_run("real-fonts/with-matches", true);
+    }
+
+    /// Reproduces the reported bug: clicking Next/Previous was horrendously
+    /// slow even when the target match is already on the currently visible
+    /// page, because every call to `scroll_to_active_search_match` forced a
+    /// full document re-render regardless of visibility.
+    #[test]
+    fn clicking_next_on_visible_match_is_fast() {
+        let doc = big_document();
+        // Three matches, all near the very top of the document (sections
+        // 1-3), so they're all visible in the initial (unscrolled) viewport.
+        let ranges: Vec<std::ops::Range<usize>> = [1, 2, 3]
+            .iter()
+            .map(|i| {
+                let query = format!("This is section {i}.");
+                let pos = doc.find(&query).expect("expected to find section text");
+                pos..pos + query.len()
+            })
+            .collect();
+        let mut cache = CommonMarkCache::default();
+        cache.set_search_ranges(ranges.clone());
+        cache.set_active_search_range(ranges.first().cloned());
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::default());
+
+        // Frame 0: cold render, populates page_size/split_points. Not timed.
+        let output = ctx.run_ui(windowed_input(), |ui| {
+            ui.set_min_height(600.0);
+            CommonMarkViewer::new()
+                .viewport_cache(true)
+                .show_scrollable("perf_test_next_click", ui, &mut cache, &doc);
+        });
+        output.drop_without_applying_deltas();
+
+        // Now simulate repeatedly clicking "Next", cycling among the 3
+        // nearby matches. None of these require scrolling far, so each
+        // should resolve within the fast viewport-only path.
+        let mut worst: std::time::Duration = std::time::Duration::ZERO;
+        for i in 0..12 {
+            let active = &ranges[i % ranges.len()];
+            cache.set_active_search_range(Some(active.clone()));
+            cache.scroll_to_active_search_match();
+
+            let click_start = std::time::Instant::now();
+            let output = ctx.run_ui(windowed_input(), |ui| {
+                ui.set_min_height(600.0);
+                CommonMarkViewer::new()
+                    .viewport_cache(true)
+                    .show_scrollable("perf_test_next_click", ui, &mut cache, &doc);
+            });
+            output.drop_without_applying_deltas();
+            let elapsed = click_start.elapsed();
+            eprintln!("[next-click] click {i}: {elapsed:?}");
+            worst = worst.max(elapsed);
+        }
+
+        assert!(
+            worst < std::time::Duration::from_millis(500),
+            "clicking Next/Previous on an on-screen match should be fast, \
+             worst frame took {worst:?}"
+        );
+    }
+
+    /// Jumping to a match far outside the current viewport (e.g. near the
+    /// end of a 1024-section document) must converge via cheap blind-scroll
+    /// nudges over a few frames, never by forcing a full document re-render.
+    #[test]
+    fn jumping_to_offscreen_match_does_not_force_full_render() {
+        let doc = big_document();
+        let query = "This is section 1000.";
+        let pos = doc.find(query).expect("expected to find section text");
+        let target = pos..pos + query.len();
+
+        let mut cache = CommonMarkCache::default();
+        cache.set_search_ranges(vec![target.clone()]);
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+
+        // Frame 0: cold render at the top of the document, populates
+        // page_size/split_points.
+        let output = ctx.run_ui(windowed_input(), |ui| {
+            ui.set_min_height(600.0);
+            CommonMarkViewer::new()
+                .viewport_cache(true)
+                .show_scrollable("perf_test_offscreen_jump", ui, &mut cache, &doc);
+        });
+        output.drop_without_applying_deltas();
+
+        cache.set_active_search_range(Some(target));
+        cache.scroll_to_active_search_match();
+
+        let before = FULL_RENDER_COUNT.load(Ordering::Relaxed);
+        let mut worst: std::time::Duration = std::time::Duration::ZERO;
+        // Give it a generous number of frames to converge via blind-scroll
+        // nudges; each individual frame should still be cheap.
+        for frame in 0..10 {
+            let frame_start = std::time::Instant::now();
+            let output = ctx.run_ui(windowed_input(), |ui| {
+                ui.set_min_height(600.0);
+                CommonMarkViewer::new()
+                    .viewport_cache(true)
+                    .show_scrollable("perf_test_offscreen_jump", ui, &mut cache, &doc);
+            });
+            output.drop_without_applying_deltas();
+            let elapsed = frame_start.elapsed();
+            eprintln!("[offscreen-jump] frame {frame}: {elapsed:?}");
+            worst = worst.max(elapsed);
+        }
+        let delta = FULL_RENDER_COUNT.load(Ordering::Relaxed) - before;
+
+        assert_eq!(
+            delta, 0,
+            "jumping to an off-screen match must not force a full re-render"
+        );
+        assert!(
+            worst < std::time::Duration::from_millis(500),
+            "every frame while converging on an off-screen match should stay cheap, \
+             worst frame took {worst:?}"
+        );
+    }
+
+    #[test]
+    fn steady_state_search_does_not_force_full_render_every_frame() {
+        let doc = big_document();
+        // A handful of matches, similar to a real search with few hits.
+        let query = "push(123)";
+        let mut ranges = Vec::new();
+        let mut start = 0;
+        while let Some(pos) = doc[start..].find(query) {
+            let s = start + pos;
+            ranges.push(s..s + query.len());
+            start = s + query.len();
+        }
+        assert!(
+            !ranges.is_empty(),
+            "test setup: expected at least one match"
+        );
+
+        let mut cache = CommonMarkCache::default();
+        cache.set_search_ranges(ranges.clone());
+        cache.set_active_search_range(ranges.first().cloned());
+        // Note: scroll_to_active_search_match() is deliberately NOT called here;
+        // we're testing the steady state where matches exist but no scroll/jump
+        // has been requested (e.g. the user has merely typed a query).
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+
+        // FULL_RENDER_COUNT is a process-wide static shared with other tests
+        // in this binary, so measure the delta this test itself causes
+        // rather than an absolute count.
+        let before = FULL_RENDER_COUNT.load(Ordering::Relaxed);
+        let start = std::time::Instant::now();
+        const FRAMES: usize = 5;
+        for frame in 0..FRAMES {
+            let output = ctx.run_ui(windowed_input(), |ui| {
+                ui.set_min_height(600.0);
+                CommonMarkViewer::new()
+                    .viewport_cache(true)
+                    .show_scrollable("perf_test_doc", ui, &mut cache, &doc);
+            });
+            output.drop_without_applying_deltas();
+            eprintln!(
+                "after frame {frame} ({:?}): cumulative full renders = {}",
+                start.elapsed(),
+                FULL_RENDER_COUNT.load(Ordering::Relaxed)
+            );
+        }
+        eprintln!("[search] total: {:?}", start.elapsed());
+
+        let delta = FULL_RENDER_COUNT.load(Ordering::Relaxed) - before;
+        assert!(
+            delta <= 1,
+            "expected at most 1 full render across {FRAMES} steady-state frames, got {delta}"
+        );
+    }
+
+    #[test]
+    fn scroll_rs_like_structure_does_not_thrash_available_size() {
+        let doc = big_document();
+        let mut cache = CommonMarkCache::default();
+        cache.set_search_ranges(vec![10..15]);
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+
+        let start = std::time::Instant::now();
+        const FRAMES: usize = 5;
+        for frame in 0..FRAMES {
+            // Vary the match-count label text across frames, like a user
+            // stepping through results would ("1/3", "2/3", ...), to see if
+            // that perturbs the CentralPanel's available size.
+            let match_label = format!("{}/3", (frame % 3) + 1);
+            let output = ctx.run_ui(windowed_input(), |ui| {
+                egui::Panel::top("search_bar").show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Search:");
+                        ui.text_edit_singleline(&mut String::from("needle"));
+                        ui.label(match_label.clone());
+                        let _ = ui.button("Previous");
+                        let _ = ui.button("Next");
+                    });
+                });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    CommonMarkViewer::new()
+                        .viewport_cache(true)
+                        .show_scrollable("perf_test_doc_panel", ui, &mut cache, &doc);
+                });
+            });
+            output.drop_without_applying_deltas();
+            eprintln!(
+                "[panel-structure] frame {frame} done at {:?}",
+                start.elapsed()
+            );
+        }
+        eprintln!("[panel-structure] total: {:?}", start.elapsed());
     }
 }
