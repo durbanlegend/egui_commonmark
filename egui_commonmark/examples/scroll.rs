@@ -38,6 +38,19 @@ impl App {
     /// forces a full document re-render), so this stays responsive even for
     /// this fairly large (~275 KB) document.
     fn update_search_matches(&mut self) {
+        // Anchor to the byte position of the currently active match so that
+        // adding/removing characters from the query stays on the same spot.
+        // Fall back to the viewport position for a fresh (no active match)
+        // search.  Using viewport_start here on a query change would jump
+        // backwards whenever the viewport centre is a couple of sections
+        // before the active match (i.e. the match is centred on screen).
+        let anchor = self
+            .active_match
+            .and_then(|i| self.search_matches.get(i))
+            .map(|r| r.start)
+            .or_else(|| self.cache.viewport_start_byte_offset("scroll_example"))
+            .unwrap_or(0);
+
         self.search_matches.clear();
         if !self.search_query.is_empty() {
             let query = self.search_query.to_lowercase();
@@ -74,14 +87,10 @@ impl App {
             return;
         }
 
-        let cursor = self
-            .cache
-            .viewport_start_byte_offset("scroll_example")
-            .unwrap_or(0);
         let nearest = self
             .search_matches
             .iter()
-            .position(|r| r.start >= cursor)
+            .position(|r| r.start >= anchor)
             .unwrap_or(0);
         self.active_match = Some(nearest);
         self.sync_active_match();
@@ -199,11 +208,48 @@ impl eframe::App for App {
                 }
             }
 
+            // Detect genuine user-initiated scroll this frame (mouse wheel /
+            // trackpad OR keyboard scroll keys).  Programmatic search scrolls
+            // never produce these input events, so no suppress flag is needed.
+            let user_scrolled = !self.search_matches.is_empty() && {
+                let has_mouse_scroll = ui.input(|i| i.is_scrolling());
+                let has_kb_scroll = !ui.ctx().egui_wants_keyboard_input()
+                    && (scroll_line_up
+                        || scroll_line_down
+                        || scroll_page_up
+                        || scroll_page_down
+                        || scroll_doc_top
+                        || scroll_doc_bottom);
+                has_mouse_scroll || has_kb_scroll
+            };
+
             CommonMarkViewer::new()
                 .max_image_width(Some(512))
                 .enable_scroll_to_heading(true)
                 .viewport_cache(self.viewport_cache)
                 .show_scrollable("scroll_example", ui, &mut self.cache, &self.content);
+
+            // After the frame has rendered (scroll deltas applied), sync
+            // active_match to the nearest match at the new viewport position.
+            // Only do this for user-driven scrolls — search-initiated scrolls
+            // must not reset the match we just navigated to.
+            if user_scrolled {
+                let cursor = self
+                    .cache
+                    .viewport_start_byte_offset("scroll_example")
+                    .unwrap_or(0);
+                let nearest = self
+                    .search_matches
+                    .iter()
+                    .position(|r| r.start >= cursor)
+                    .unwrap_or(0);
+                if self.active_match != Some(nearest) {
+                    self.active_match = Some(nearest);
+                    self.sync_active_match();
+                    // Do NOT call scroll_to_active_search_match here: the
+                    // viewport is already where the user put it.
+                }
+            }
         });
     }
 }
