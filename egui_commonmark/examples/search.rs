@@ -143,10 +143,7 @@ impl App {
     fn sync_active_match(&mut self) {
         self.cache.set_active_search_range(
             self.active_match
-                .and_then(|i| {
-                    dbg!(i);
-                    self.search_matches.get(i)
-                })
+                .and_then(|i| self.search_matches.get(i))
                 .cloned(),
         );
     }

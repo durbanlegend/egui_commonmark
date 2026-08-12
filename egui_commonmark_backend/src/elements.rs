@@ -121,12 +121,16 @@ pub fn label_with_search_highlight(
         egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
     });
 
-    let mut active_rect = None;
-    if ui.is_rect_visible(response.rect) {
-        if let Some((range, true)) = intervals.iter().find(|(_, active)| *active) {
-            active_rect = highlight_rect_for_byte_range(&galley, pos, range.clone());
-        }
+    // Compute the active-match rect unconditionally: `pos` and `galley` hold
+    // valid screen-coordinate data even when the label is outside the clip
+    // rect, and callers need this rect to scroll to a match that is currently
+    // off-screen. Only the *painting* step below stays inside `is_rect_visible`.
+    let active_rect = intervals
+        .iter()
+        .find(|(_, active)| *active)
+        .and_then(|(range, _)| highlight_rect_for_byte_range(&galley, pos, range.clone()));
 
+    if ui.is_rect_visible(response.rect) {
         let response_color = ui.style().visuals.text_color();
         let selectable = ui.style().interaction.selectable_labels;
         if selectable {
