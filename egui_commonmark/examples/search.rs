@@ -113,7 +113,6 @@ impl App {
                     self.search_matches.push(match_start..match_end);
                     start += pos + query.len();
                 }
-                // dbg!(&self.search_matches);
             }
         }
         self.cache.set_search_ranges(self.search_matches.clone());
@@ -128,13 +127,11 @@ impl App {
             .cache
             .viewport_start_byte_offset("search_example")
             .unwrap_or(0);
-        dbg!(&cursor);
         let nearest = self
             .search_matches
             .iter()
             .position(|r| r.start >= cursor)
             .unwrap_or(0);
-        dbg!(&nearest);
         self.active_match = Some(nearest);
         self.sync_active_match();
         self.cache.scroll_to_active_search_match();

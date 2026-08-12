@@ -783,6 +783,7 @@ impl CommonMarkCache {
     }
 
     /// Clear the cache for all scrollable elements
+    /// Clear the cache for all scrollable elements
     pub fn clear_scrollable(&mut self) {
         self.scroll.clear();
     }

@@ -785,8 +785,9 @@ impl CommonMarkViewerInternal {
                         quote!(
                         egui_commonmark_backend::Link {
                             destination: #destination.to_owned(),
-                            text: vec![#text_stream]
-                        }.end(ui, #cache, &options, &mut None);)
+                            text: vec![#text_stream],
+                            chunks: vec![]
+                        }.end(ui, #cache, &options, &mut None, false);)
                     }
                 } else {
                     TokenStream::new()

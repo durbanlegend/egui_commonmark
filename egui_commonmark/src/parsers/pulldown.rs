@@ -138,9 +138,16 @@ fn parser_options_extras(
     result
 }
 
+/// Tracks how many full-document renders have been performed for each
+/// `show_scrollable` source, keyed by `split_points_id`. Only compiled in
+/// test builds; used by the perf-regression tests below to assert that the
+/// cheap viewport-only path is taken once split points have been populated.
+/// Because each source uses its own key, tests that run in parallel do not
+/// interfere with each other's counts.
 #[cfg(test)]
-pub(crate) static FULL_RENDER_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static FULL_RENDER_COUNTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<Id, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 impl CommonMarkViewerInternal {
     /// Be aware that this acquires egui::Context internally.
@@ -154,7 +161,10 @@ impl CommonMarkViewerInternal {
         split_points_id: Option<Id>,
     ) -> (egui::InnerResponse<()>, Vec<CheckboxClickEvent>) {
         #[cfg(test)]
-        FULL_RENDER_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(sid) = split_points_id {
+            *FULL_RENDER_COUNTS.lock().unwrap().entry(sid).or_insert(0) += 1;
+        }
+
         self.any_image_loading = false;
         self.want_scroll_to_active_match = cache.take_pending_scroll_to_active_match();
         let max_width = options.max_width(ui);
@@ -1158,7 +1168,14 @@ fn apply_pending_scroll_delta(cache: &mut CommonMarkCache, ui: &mut Ui) {
 mod perf_tests {
     use super::*;
     use crate::{CommonMarkCache, CommonMarkViewer};
-    use std::sync::atomic::Ordering;
+
+    /// Returns the number of full-document renders recorded for `source_id`
+    /// since the process started (or since the entry was first created). Each
+    /// source_id has its own counter, so parallel tests do not interfere.
+    fn full_render_count_for(source_id: &str) -> usize {
+        let id = egui::Id::new(source_id);
+        *FULL_RENDER_COUNTS.lock().unwrap().get(&id).unwrap_or(&0)
+    }
 
     fn big_document() -> String {
         let mut text = String::new();
@@ -1274,7 +1291,7 @@ mod perf_tests {
         cache.set_active_search_range(Some(target));
         cache.scroll_to_active_search_match();
 
-        let before = FULL_RENDER_COUNT.load(Ordering::Relaxed);
+        let before = full_render_count_for("perf_test_offscreen_jump");
         let mut worst = std::time::Duration::ZERO;
         for _ in 0..10 {
             let frame_start = std::time::Instant::now();
@@ -1287,7 +1304,7 @@ mod perf_tests {
             output.drop_without_applying_deltas();
             worst = worst.max(frame_start.elapsed());
         }
-        let delta = FULL_RENDER_COUNT.load(Ordering::Relaxed) - before;
+        let delta = full_render_count_for("perf_test_offscreen_jump") - before;
 
         assert_eq!(
             delta, 0,
@@ -1327,10 +1344,10 @@ mod perf_tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(egui::FontDefinitions::empty());
 
-        // FULL_RENDER_COUNT is a process-wide static shared with other tests
-        // in this binary, so measure the delta this test itself causes
-        // rather than an absolute count.
-        let before = FULL_RENDER_COUNT.load(Ordering::Relaxed);
+        // Each test uses its own source_id, so full_render_count_for() is
+        // keyed per source and cannot be polluted by other tests running in
+        // parallel.
+        let before = full_render_count_for("perf_test_doc");
         const FRAMES: usize = 5;
         for _ in 0..FRAMES {
             let output = ctx.run_ui(windowed_input(), |ui| {
@@ -1342,7 +1359,7 @@ mod perf_tests {
             output.drop_without_applying_deltas();
         }
 
-        let delta = FULL_RENDER_COUNT.load(Ordering::Relaxed) - before;
+        let delta = full_render_count_for("perf_test_doc") - before;
         assert!(
             delta <= 1,
             "expected at most 1 full render across {FRAMES} steady-state frames, got {delta}"
