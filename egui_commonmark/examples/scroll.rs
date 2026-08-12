@@ -18,6 +18,14 @@ struct App {
     search_query: String,
     search_matches: Vec<std::ops::Range<usize>>,
     active_match: Option<usize>,
+    /// Counts down after search-initiated scrolls (Next / Previous / query
+    /// change) to block viewport-driven active_match updates while the
+    /// scroll-to-match animation is still in progress.  User scroll input
+    /// immediately clears this to zero so the user always wins.
+    search_scroll_protection: u32,
+    /// Byte offset reported by the viewer at the end of the last frame;
+    /// used to detect viewport movement without relying on input events.
+    last_viewport_offset: usize,
 }
 
 impl App {
@@ -95,6 +103,10 @@ impl App {
         self.active_match = Some(nearest);
         self.sync_active_match();
         self.cache.scroll_to_active_search_match();
+        // Suppress viewport-sync for ~30 frames so the animation toward the
+        // new match is not immediately overridden by the centering drift
+        // (viewport start lands before the active match when centred on screen).
+        self.search_scroll_protection = 30;
     }
 
     fn sync_active_match(&mut self) {
@@ -120,6 +132,7 @@ impl App {
         self.active_match = Some(next as usize);
         self.sync_active_match();
         self.cache.scroll_to_active_search_match();
+        self.search_scroll_protection = 30;
     }
 }
 
@@ -208,20 +221,22 @@ impl eframe::App for App {
                 }
             }
 
-            // Detect genuine user-initiated scroll this frame (mouse wheel /
-            // trackpad OR keyboard scroll keys).  Programmatic search scrolls
-            // never produce these input events, so no suppress flag is needed.
-            let user_scrolled = !self.search_matches.is_empty() && {
-                let has_mouse_scroll = ui.input(|i| i.is_scrolling());
-                let has_kb_scroll = !ui.ctx().egui_wants_keyboard_input()
+            // Any explicit user scroll input immediately cancels protection so
+            // the user's scroll position always wins over search animation.
+            let user_scroll_input = {
+                let has_mouse = ui.input(|i| i.is_scrolling());
+                let has_kb = !ui.ctx().egui_wants_keyboard_input()
                     && (scroll_line_up
                         || scroll_line_down
                         || scroll_page_up
                         || scroll_page_down
                         || scroll_doc_top
                         || scroll_doc_bottom);
-                has_mouse_scroll || has_kb_scroll
+                has_mouse || has_kb
             };
+            if user_scroll_input {
+                self.search_scroll_protection = 0;
+            }
 
             CommonMarkViewer::new()
                 .max_image_width(Some(512))
@@ -229,26 +244,40 @@ impl eframe::App for App {
                 .viewport_cache(self.viewport_cache)
                 .show_scrollable("scroll_example", ui, &mut self.cache, &self.content);
 
-            // After the frame has rendered (scroll deltas applied), sync
-            // active_match to the nearest match at the new viewport position.
-            // Only do this for user-driven scrolls — search-initiated scrolls
-            // must not reset the match we just navigated to.
-            if user_scrolled {
-                let cursor = self
-                    .cache
-                    .viewport_start_byte_offset("scroll_example")
-                    .unwrap_or(0);
+            // After show_scrollable the viewer has applied any pending scroll
+            // delta and updated the byte-offset tracker.  Sync active_match
+            // whenever the viewport byte offset actually changed AND no search
+            // scroll is still animating.  This fires on every animation frame
+            // (not just the key-press frame), so even large PageDown jumps
+            // settle to the correct match once the animation completes.
+            let current_offset = self
+                .cache
+                .viewport_start_byte_offset("scroll_example")
+                .unwrap_or(0);
+
+            if !self.search_matches.is_empty()
+                && self.search_scroll_protection == 0
+                && current_offset != self.last_viewport_offset
+            {
+                let len = self.search_matches.len();
                 let nearest = self
                     .search_matches
                     .iter()
-                    .position(|r| r.start >= cursor)
-                    .unwrap_or(0);
+                    .position(|r| r.start >= current_offset)
+                    // If the viewport is past the last match, show the last
+                    // match rather than wrapping back to the first.
+                    .unwrap_or(len - 1);
                 if self.active_match != Some(nearest) {
                     self.active_match = Some(nearest);
                     self.sync_active_match();
                     // Do NOT call scroll_to_active_search_match here: the
                     // viewport is already where the user put it.
                 }
+            }
+
+            self.last_viewport_offset = current_offset;
+            if self.search_scroll_protection > 0 {
+                self.search_scroll_protection -= 1;
             }
         });
     }
@@ -283,6 +312,8 @@ fn main() -> eframe::Result {
                 search_query: String::new(),
                 search_matches: Vec::new(),
                 active_match: None,
+                search_scroll_protection: 0,
+                last_viewport_offset: 0,
             }))
         }),
     )
