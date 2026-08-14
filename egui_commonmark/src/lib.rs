@@ -232,6 +232,17 @@ impl<'f> CommonMarkViewer<'f> {
         self
     }
 
+    /// When `true`, [`show_scrollable`] only renders the visible slice of the
+    /// document each frame, keeping large documents fast. When `false` (the
+    /// default) the full document is rendered every frame and egui clips what
+    /// is off-screen, which is simpler and sufficient for most documents.
+    ///
+    /// [`show_scrollable`]: Self::show_scrollable
+    pub fn viewport_cache(mut self, enable: bool) -> Self {
+        self.options.use_viewport_cache = enable;
+        self
+    }
+
     /// Shows rendered markdown
     pub fn show(
         self,

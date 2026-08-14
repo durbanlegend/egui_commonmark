@@ -275,12 +275,32 @@ impl CommonMarkViewerInternal {
         let available_size = ui.available_size();
         let scroll_id = source_id.with("_scroll_area");
 
+        if !options.use_viewport_cache {
+            // Simple path: render the full document every frame; egui clips
+            // what is off-screen. Clears any stale cache from a previous run.
+            {
+                let sc = scroll_cache(cache, &source_id);
+                sc.page_size = None;
+                sc.split_points.clear();
+                sc.heading_y_positions.clear();
+            }
+            egui::ScrollArea::vertical()
+                .id_salt(scroll_id)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    self.show(ui, cache, options, text, None);
+                    apply_pending_scroll_delta(cache, ui);
+                });
+            return;
+        }
+
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     self.show(ui, cache, options, text, Some(source_id));
+                    apply_pending_scroll_delta(cache, ui);
                 });
             scroll_cache(cache, &source_id).available_size = available_size;
             return;
@@ -311,6 +331,7 @@ impl CommonMarkViewerInternal {
                 None
             }
         };
+        let pending_delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
 
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
@@ -328,6 +349,9 @@ impl CommonMarkViewerInternal {
                         egui::Vec2::ZERO,
                     );
                     ui.scroll_to_rect(r, Some(egui::Align::TOP));
+                }
+                if pending_delta != egui::Vec2::ZERO {
+                    ui.scroll_with_delta(pending_delta);
                 }
 
                 ui.set_height(page_size.y);
@@ -989,5 +1013,12 @@ impl CommonMarkViewerInternal {
             block.end(ui, cache, options, max_width);
             self.line.try_insert_end(ui);
         }
+    }
+}
+
+fn apply_pending_scroll_delta(cache: &mut CommonMarkCache, ui: &mut Ui) {
+    let delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
+    if delta != egui::Vec2::ZERO {
+        ui.scroll_with_delta(delta);
     }
 }
