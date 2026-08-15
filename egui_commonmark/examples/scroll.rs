@@ -338,21 +338,23 @@ fn build_document() -> String {
     for i in 1..=1024_usize {
         let id = if i == 500 { " {#section-500}" } else { "" };
         text += &format!(
-            "\n## Section {i}{id}\n\
-             \n\
-             This is section {i}. Each section contains a short code block and an image.\n\
-             \n\
-             ```rs\n\
-             let mut vec = Vec::new();\n\
-             vec.push({i});\n\
-             ```\n\
-             \n\
-             * Make a sandwich\n\
-             * Bake a cake\n\
-             * Conquer the world\n\
-             \n\
-             ![Ferris the Rust mascot](egui_commonmark/examples/cuddlyferris.png)\n\
-             \n"
+            r#"
+## Section {i}{id}
+
+This is section {i}. Each section contains a short code block and an image.
+
+```rs
+let mut vec = Vec::new();
+vec.push({i});
+```
+
+* Make a sandwich
+* Bake a cake
+* Conquer the world
+
+![Ferris the Rust mascot](egui_commonmark/examples/cuddlyferris.png)
+
+"#
         );
     }
     text
