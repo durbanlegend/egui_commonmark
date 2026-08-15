@@ -1,5 +1,19 @@
 # egui_commonmark changelog
 
+## Unreleased
+
+### Added
+
+- `pending_scroll_delta` and `set_scroll_delta` for keyboard scrolling with
+  `show_scrollable` ([#101](https://github.com/lampsitter/egui_commonmark/pull/101) by [@durbanlegend](https://github.com/durbanlegend))
+- `viewport_cache` to disable or enable viewport cache for `show_scrollable`
+  ([#101](https://github.com/lampsitter/egui_commonmark/pull/101) by [@durbanlegend](https://github.com/durbanlegend))
+
+### Fixed
+
+- Fix `show_scrollable` to support seamless scrolling of large documents
+  ([#98](https://github.com/lampsitter/egui_commonmark/pull/98) by [@durbanlegend](https://github.com/durbanlegend))
+
 ## 0.25.0 - 2026-08-05
 
 ### Changed
