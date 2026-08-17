@@ -157,6 +157,7 @@ impl eframe::App for App {
             ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
+                self.cache.apply_pending_scroll_delta(ui);
                 CommonMarkViewer::new().show(ui, &mut self.cache, MARKDOWN);
             });
         });

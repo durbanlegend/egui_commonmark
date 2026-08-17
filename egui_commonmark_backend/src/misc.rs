@@ -689,8 +689,9 @@ impl CommonMarkCache {
         &mut self.scroll_to_id_target
     }
 
-    /// Accumulate a scroll delta to be applied inside the next [`show_scrollable`] call
-    /// and then cleared. Positive y scrolls toward the top; negative toward the bottom.
+    /// Accumulate a scroll delta to be applied inside the next [`show_scrollable`] or
+    /// [`apply_pending_scroll_delta`] call and then cleared.
+    /// Positive y scrolls toward the top; negative toward the bottom.
     /// Multiple calls before the next frame are summed.
     ///
     /// This is the preferred way to drive keyboard or programmatic scrolling when using
@@ -700,6 +701,15 @@ impl CommonMarkCache {
     /// [`show_scrollable`]: crate::CommonMarkViewer::show_scrollable
     pub fn set_scroll_delta(&mut self, delta: egui::Vec2) {
         self.pending_scroll_delta += delta;
+    }
+
+    /// To apply scrolling without `show_scrollable`, call this function immediately before
+    /// or after `show`.
+    pub fn apply_pending_scroll_delta(&mut self, ui: &Ui) {
+        let delta = std::mem::replace(&mut self.pending_scroll_delta, egui::Vec2::ZERO);
+        if delta != egui::Vec2::ZERO {
+            ui.scroll_with_delta(delta);
+        }
     }
 
     /// Set the byte ranges (into the source text passed to the viewer) that
