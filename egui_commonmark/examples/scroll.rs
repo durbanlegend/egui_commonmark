@@ -60,8 +60,6 @@ impl App {
             .map(|r| r.start)
             .or_else(|| self.cache.viewport_start_byte_offset(EGUI_SOURCE_ID))
             .unwrap_or(0);
-        dbg!(&anchor);
-        dbg!(&self.last_viewport_offset);
 
         self.search_matches.clear();
         if !self.search_query.is_empty() {
@@ -258,20 +256,29 @@ impl eframe::App for App {
                 .cache
                 .viewport_start_byte_offset(EGUI_SOURCE_ID)
                 .unwrap_or(0);
-            let current_scroll_y = scroll_output.state.offset.y;
 
             if !self.search_matches.is_empty()
                 && self.search_scroll_protection == 0
                 && current_offset != self.last_viewport_offset
             {
                 let len = self.search_matches.len();
-                let nearest = self
+                // This works:
+                // let nearest = self
+                //     .search_matches
+                //     .iter()
+                //     .rposition(|r| r.start < current_offset)
+                //     // If the viewport is past the last match, show the last
+                //     // match rather than wrapping back to the first.
+                //     .unwrap_or(len - 1);
+                // Performance option:
+                let idx = self
                     .search_matches
-                    .iter()
-                    .position(|r| r.start >= current_offset)
-                    // If the viewport is past the last match, show the last
-                    // match rather than wrapping back to the first.
-                    .unwrap_or(len - 1);
+                    .partition_point(|r| r.start < current_offset);
+                let nearest = if idx > 0 {
+                    idx - 1
+                } else {
+                    len.saturating_sub(1)
+                };
                 if self.active_match != Some(nearest) {
                     self.active_match = Some(nearest);
                     self.sync_active_match();
