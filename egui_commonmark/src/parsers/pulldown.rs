@@ -1,3 +1,4 @@
+use std::borrow::ToOwned;
 use std::iter::Peekable;
 use std::ops::Range;
 
@@ -362,8 +363,8 @@ impl CommonMarkViewerInternal {
         // Resolve any pending TOC scroll via the cached heading positions so that
         // navigation works even when the target is outside the rendered slice.
         let pending_scroll_y: Option<f32> = {
-            let slug_owned = cache.scroll_to_id_target().map(|s| s.to_owned());
-            if let Some(ref slug) = slug_owned {
+            let slug_owned = cache.scroll_to_id_target().map(ToOwned::to_owned);
+            slug_owned.as_ref().map_or(None, |slug| {
                 let sc = scroll_cache(cache, &source_id);
                 if let Some(&y) = sc.heading_y_positions.get(slug) {
                     cache.scroll_to_id_target_mut().take();
@@ -371,9 +372,7 @@ impl CommonMarkViewerInternal {
                 } else {
                     None
                 }
-            } else {
-                None
-            }
+            })
         };
         let pending_delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
 
@@ -456,8 +455,7 @@ impl CommonMarkViewerInternal {
                             .split_points
                             .iter()
                             .find(|(_, vstart, _, _)| vstart.y > render_below)
-                            .map(|(index, _, _, _)| *index)
-                            .unwrap_or(num_rows);
+                            .map_or(num_rows, |(index, _, _, _)| *index);
                         let skip_height = first_end_position.y.max(0.0);
                         // When a preceding split was found, its End(Block) is already
                         // accounted for in skip_height — re-processing it would add a
@@ -873,7 +871,7 @@ impl CommonMarkViewerInternal {
         text: CowStr,
         src_span: Range<usize>,
         ui: &mut Ui,
-        cache: &mut CommonMarkCache,
+        cache: &CommonMarkCache,
         options: &CommonMarkOptions,
     ) {
         if let Some(image) = &mut self.image {
@@ -1157,7 +1155,7 @@ impl CommonMarkViewerInternal {
     }
 }
 
-fn apply_pending_scroll_delta(cache: &mut CommonMarkCache, ui: &mut Ui) {
+fn apply_pending_scroll_delta(cache: &mut CommonMarkCache, ui: &Ui) {
     let delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
     if delta != egui::Vec2::ZERO {
         ui.scroll_with_delta(delta);

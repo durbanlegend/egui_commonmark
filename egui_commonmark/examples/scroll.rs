@@ -11,6 +11,8 @@ use std::env;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
+const EGUI_SOURCE_ID: &'static str = "scroll_example";
+
 struct App {
     cache: CommonMarkCache,
     content: String,
@@ -56,8 +58,10 @@ impl App {
             .active_match
             .and_then(|i| self.search_matches.get(i))
             .map(|r| r.start)
-            .or_else(|| self.cache.viewport_start_byte_offset("scroll_example"))
+            .or_else(|| self.cache.viewport_start_byte_offset(EGUI_SOURCE_ID))
             .unwrap_or(0);
+        dbg!(&anchor);
+        dbg!(&self.last_viewport_offset);
 
         self.search_matches.clear();
         if !self.search_query.is_empty() {
@@ -242,7 +246,7 @@ impl eframe::App for App {
                 .max_image_width(Some(512))
                 .enable_scroll_to_heading(true)
                 .viewport_cache(self.viewport_cache)
-                .show_scrollable("scroll_example", ui, &mut self.cache, &self.content);
+                .show_scrollable(EGUI_SOURCE_ID, ui, &mut self.cache, &self.content);
 
             // After show_scrollable the viewer has applied any pending scroll
             // delta and updated the byte-offset tracker.  Sync active_match
@@ -252,8 +256,9 @@ impl eframe::App for App {
             // settle to the correct match once the animation completes.
             let current_offset = self
                 .cache
-                .viewport_start_byte_offset("scroll_example")
+                .viewport_start_byte_offset(EGUI_SOURCE_ID)
                 .unwrap_or(0);
+            let current_scroll_y = scroll_output.state.offset.y;
 
             if !self.search_matches.is_empty()
                 && self.search_scroll_protection == 0

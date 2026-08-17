@@ -65,103 +65,9 @@ at your option.
 
 struct App {
     cache: CommonMarkCache,
-    search_query: String,
-    search_matches: Vec<std::ops::Range<usize>>,
-    active_match: Option<usize>,
 }
 
-impl App {
-    /// Recomputes `search_matches` from the *rendered* text only (via
-    /// pulldown-cmark's `Text`/`Code` events), so link destinations,
-    /// heading `{#id}` attribute syntax, and other non-visible markdown
-    /// syntax are never matched (a naive substring search over the raw
-    /// source would, for example, double-count "500" in
-    /// `[Section 500](#section-500)`: once in the visible text, once in the
-    /// URL).
-    ///
-    /// Recomputes `search_matches` on every keystroke and immediately
-    /// advances to the nearest match at or after wherever the user is
-    /// currently scrolled to (wrapping to the first match if there is none
-    /// after that point), mirroring how a normal "find in page" behaves.
-    /// Recomputation and the resulting scroll are both cheap (see
-    /// `CommonMarkCache::scroll_to_active_search_match`'s docs: this never
-    /// forces a full document re-render), so this shoud stay responsive.
-    fn update_search_matches(&mut self) {
-        self.search_matches.clear();
-        if !self.search_query.is_empty() {
-            let query = self.search_query.to_lowercase();
-            // Mirror the options CommonMarkViewer itself parses with,
-            // including heading attributes since `enable_scroll_to_heading`
-            // is set below (otherwise `{#section-500}` would remain in the
-            // heading's Text event and get matched too).
-            let options = pulldown_cmark::Options::ENABLE_STRIKETHROUGH
-                | pulldown_cmark::Options::ENABLE_TASKLISTS
-                | pulldown_cmark::Options::ENABLE_TABLES
-                | pulldown_cmark::Options::ENABLE_FOOTNOTES
-                | pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES;
-            let parser = pulldown_cmark::Parser::new_ext(MARKDOWN, options).into_offset_iter();
-            for (event, range) in parser {
-                let text = match event {
-                    pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text) => text,
-                    _ => continue,
-                };
-                let haystack = text.to_lowercase();
-                let mut start = 0;
-                while let Some(pos) = haystack[start..].find(&query) {
-                    let match_start = range.start + start + pos;
-                    let match_end = match_start + query.len();
-                    self.search_matches.push(match_start..match_end);
-                    start += pos + query.len();
-                }
-            }
-        }
-        self.cache.set_search_ranges(self.search_matches.clone());
-
-        if self.search_matches.is_empty() {
-            self.active_match = None;
-            self.sync_active_match();
-            return;
-        }
-
-        let cursor = self
-            .cache
-            .viewport_start_byte_offset("search_example")
-            .unwrap_or(0);
-        let nearest = self
-            .search_matches
-            .iter()
-            .position(|r| r.start >= cursor)
-            .unwrap_or(0);
-        self.active_match = Some(nearest);
-        self.sync_active_match();
-        self.cache.scroll_to_active_search_match();
-    }
-
-    fn sync_active_match(&mut self) {
-        self.cache.set_active_search_range(
-            self.active_match
-                .and_then(|i| self.search_matches.get(i))
-                .cloned(),
-        );
-    }
-
-    fn go_to_match(&mut self, delta: isize) {
-        if self.search_matches.is_empty() {
-            return;
-        }
-        let len = self.search_matches.len() as isize;
-        let next = match self.active_match {
-            Some(i) => (i as isize + delta).rem_euclid(len),
-            // First navigation after a fresh search: start at the first
-            // match for Next, the last one for Previous.
-            None if delta >= 0 => 0,
-            None => len - 1,
-        };
-        self.active_match = Some(next as usize);
-        self.sync_active_match();
-        self.cache.scroll_to_active_search_match();
-    }
-}
+impl App {}
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -170,9 +76,9 @@ impl eframe::App for App {
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                let response = ui.text_edit_singleline(&mut self.search_query);
+                let response = ui.text_edit_singleline(&mut self.cache.search_query);
                 if response.changed() {
-                    self.update_search_matches();
+                    self.cache.update_search_matches("search_example", MARKDOWN);
                 }
                 // Checked unconditionally (not gated on the text edit still
                 // having focus): a single-line TextEdit surrenders focus the
@@ -185,8 +91,8 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self.search_matches.len();
-                ui.label(match self.active_match {
+                let match_count = self.cache.search_ranges().len();
+                ui.label(match self.cache.active_match() {
                     Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
                     _ => format!("0/{match_count}"),
                 });
@@ -194,12 +100,12 @@ impl eframe::App for App {
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.go_to_match(-1);
+                    self.cache.go_to_match(-1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.go_to_match(1);
+                    self.cache.go_to_match(1);
                 }
             });
         });
@@ -274,9 +180,6 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
-                search_query: String::new(),
-                search_matches: Vec::new(),
-                active_match: None,
             }))
         }),
     )

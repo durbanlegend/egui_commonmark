@@ -589,12 +589,16 @@ pub struct CommonMarkCache {
     /// `show_scrollable` call and then cleared.
     pub pending_scroll_delta: egui::Vec2,
 
+    /// The search query text
+    pub search_query: String,
     /// Byte ranges (into the source text passed to the viewer) that should
     /// be highlighted as search matches.
     search_ranges: Vec<Range<usize>>,
     /// The currently active (focused) search match, highlighted more
     /// prominently than the others.
     active_search_range: Option<Range<usize>>,
+    /// The ordinal number of the active search match
+    active_match: Option<usize>,
     /// Set by [`CommonMarkCache::scroll_to_active_search_match`] and cleared
     /// once the render pass that finds and scrolls to the active match runs.
     pending_scroll_to_active_match: bool,
@@ -618,8 +622,10 @@ impl Default for CommonMarkCache {
             scroll_to_id_target: None,
             has_installed_loaders: false,
             pending_scroll_delta: egui::Vec2::ZERO,
+            search_query: String::new(),
             search_ranges: Vec::new(),
             active_search_range: None,
+            active_match: None,
             pending_scroll_to_active_match: false,
             pending_scroll_to_active_match_retries: 0,
         }
@@ -743,6 +749,11 @@ impl CommonMarkCache {
         self.active_search_range.as_ref()
     }
 
+    /// The ordinal number of the currently active (focused) search match, if any.
+    pub fn active_match(&self) -> Option<usize> {
+        self.active_match
+    }
+
     /// Request that the view scroll so that the active search match (set via
     /// [`set_active_search_range`](Self::set_active_search_range)) becomes
     /// visible, centered in the viewport where possible. The request is
@@ -782,7 +793,96 @@ impl CommonMarkCache {
         true
     }
 
-    /// Clear the cache for all scrollable elements
+    /// Recomputes `search_ranges` from the *rendered* text only (via
+    /// pulldown-cmark's `Text`/`Code` events), so link destinations,
+    /// heading `{#id}` attribute syntax, and other non-visible markdown
+    /// syntax are never matched (a naive substring search over the raw
+    /// source would, for example, double-count "500" in
+    /// `[Section 500](#section-500)`: once in the visible text, once in the
+    /// URL).
+    ///
+    /// Recomputes `search_ranges` on every keystroke and immediately
+    /// advances to the nearest match at or after wherever the user is
+    /// currently scrolled to (wrapping to the first match if there is none
+    /// after that point), mirroring how a normal "find in page" behaves.
+    /// Recomputation and the resulting scroll are both cheap (see
+    /// `CommonMarkCache::scroll_to_active_search_match`'s docs: this never
+    /// forces a full document re-render), so this shoud stay responsive.
+    pub fn update_search_matches(&mut self, egui_source_id: &str, content: &str) {
+        self.search_ranges.clear();
+        if !self.search_query.is_empty() {
+            let query = self.search_query.to_lowercase();
+            // Mirror the options CommonMarkViewer itself parses with,
+            // including heading attributes since `enable_scroll_to_heading`
+            // is set below (otherwise `{#section-500}` would remain in the
+            // heading's Text event and get matched too).
+            let options = pulldown_cmark::Options::ENABLE_STRIKETHROUGH
+                | pulldown_cmark::Options::ENABLE_TASKLISTS
+                | pulldown_cmark::Options::ENABLE_TABLES
+                | pulldown_cmark::Options::ENABLE_FOOTNOTES
+                | pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES;
+            let parser = pulldown_cmark::Parser::new_ext(content, options).into_offset_iter();
+            for (event, range) in parser {
+                let (pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text)) = event
+                else {
+                    continue;
+                };
+                let haystack = text.to_lowercase();
+                let mut start = 0;
+                while let Some(pos) = haystack[start..].find(&query) {
+                    let match_start = range.start + start + pos;
+                    let match_end = match_start + query.len();
+                    self.search_ranges.push(match_start..match_end);
+                    start += pos + query.len();
+                }
+            }
+        }
+
+        if self.search_ranges.is_empty() {
+            self.active_match = None;
+            self.sync_active_match();
+            return;
+        }
+
+        let cursor = self.viewport_start_byte_offset(egui_source_id).unwrap_or(0);
+        dbg!(cursor);
+        let nearest = self
+            .search_ranges
+            .iter()
+            .position(|r| r.start >= cursor)
+            .unwrap_or(0);
+        self.active_match = Some(nearest);
+        self.sync_active_match();
+        self.scroll_to_active_search_match();
+    }
+
+    // Update the active search range to the desired ordinal value
+    fn sync_active_match(&mut self) {
+        self.set_active_search_range(
+            self.active_match
+                .and_then(|i| self.search_ranges.get(i))
+                .cloned(),
+        );
+    }
+
+    /// Scroll back or forward `delta` matches (according to the sign of `delta`) if applicable
+    pub fn go_to_match(&mut self, delta: isize) {
+        if self.search_ranges.is_empty() {
+            return;
+        }
+        let len = self.search_ranges.len() as isize;
+        let next = match self.active_match {
+            Some(i) => (i as isize + delta).rem_euclid(len),
+            // First navigation after a fresh search: start at the first
+            // match for Next, the last one for Previous.
+            None if delta >= 0 => 0,
+            None => len - 1,
+        };
+        self.active_match = Some(next as usize);
+        self.sync_active_match();
+        self.scroll_to_active_search_match();
+    }
+
     /// Clear the cache for all scrollable elements
     pub fn clear_scrollable(&mut self) {
         self.scroll.clear();
