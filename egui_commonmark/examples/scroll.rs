@@ -182,63 +182,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
-            let (
-                scroll_line_up,
-                scroll_line_down,
-                scroll_page_up,
-                scroll_page_down,
-                scroll_doc_top,
-                scroll_doc_bottom,
-            ) = ui.ctx().input(|i| {
-                use egui::Key;
-                (
-                    !i.modifiers.command && i.key_pressed(Key::ArrowUp),
-                    !i.modifiers.command && i.key_pressed(Key::ArrowDown),
-                    i.key_pressed(Key::PageUp),
-                    i.key_pressed(Key::PageDown),
-                    i.key_pressed(Key::Home)
-                        || (i.modifiers.command && i.key_pressed(Key::ArrowUp)),
-                    i.key_pressed(Key::End)
-                        || (i.modifiers.command && i.key_pressed(Key::ArrowDown)),
-                )
-            });
-
-            // Only act on scroll keys when no text field has focus.
-            if !ui.ctx().egui_wants_keyboard_input() {
-                let line_h = ui.text_style_height(&egui::TextStyle::Body);
-                let page_h = ui.available_height();
-                if scroll_line_up {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, line_h));
-                } else if scroll_line_down {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, -line_h));
-                } else if scroll_page_up {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, page_h));
-                } else if scroll_page_down {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, -page_h));
-                } else if scroll_doc_top {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, f32::MAX / 2.0));
-                } else if scroll_doc_bottom {
-                    self.cache
-                        .set_scroll_delta(egui::vec2(0.0, -f32::MAX / 2.0));
-                }
-            }
-
-            // Any explicit user scroll input immediately cancels protection so
-            // the user's scroll position always wins over search animation.
-            let user_scroll_input = {
-                let has_mouse = ui.input(|i| i.is_scrolling());
-                let has_kb = !ui.ctx().egui_wants_keyboard_input()
-                    && (scroll_line_up
-                        || scroll_line_down
-                        || scroll_page_up
-                        || scroll_page_down
-                        || scroll_doc_top
-                        || scroll_doc_bottom);
-                has_mouse || has_kb
-            };
-            if user_scroll_input {
-                self.search_scroll_protection = 0;
-            }
+            let _user_scrolled = self.cache.handle_keyboard_scrolling(ui);
 
             CommonMarkViewer::new()
                 .max_image_width(Some(512))
@@ -262,15 +206,6 @@ impl eframe::App for App {
                 && current_offset != self.last_viewport_offset
             {
                 let len = self.search_matches.len();
-                // This works:
-                // let nearest = self
-                //     .search_matches
-                //     .iter()
-                //     .rposition(|r| r.start < current_offset)
-                //     // If the viewport is past the last match, show the last
-                //     // match rather than wrapping back to the first.
-                //     .unwrap_or(len - 1);
-                // Performance option:
                 let idx = self
                     .search_matches
                     .partition_point(|r| r.start < current_offset);

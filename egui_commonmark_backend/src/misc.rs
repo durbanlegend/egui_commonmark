@@ -568,6 +568,16 @@ fn default_theme(ui: &Ui) -> &str {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScrollAction {
+    LineUp,
+    LineDown,
+    PageUp,
+    PageDown,
+    DocTop,
+    DocBottom,
+}
+
 /// A cache used for storing content such as images.
 #[derive(Debug)]
 pub struct CommonMarkCache {
@@ -919,7 +929,6 @@ impl CommonMarkCache {
         }
 
         let cursor = self.viewport_start_byte_offset(egui_source_id).unwrap_or(0);
-        dbg!(cursor);
         let nearest = self
             .search_ranges
             .iter()
@@ -1087,6 +1096,59 @@ impl CommonMarkCache {
             .get(options.curr_theme(ui))
             // Since we have called load_defaults, the default theme *should* always be available..
             .unwrap_or_else(|| &self.ts.themes[default_theme(ui)])
+    }
+
+    /// Handles keyboard scrolling input and updates cache delta.
+    /// Returns `true` if any explicit user scrolling (wheel or keyboard) occurred.
+    pub fn handle_keyboard_scrolling(&mut self, ui: &egui::Ui) -> bool {
+        let scroll_action = ui.ctx().input(|i| {
+            use egui::Key;
+            if i.key_pressed(Key::Home) || (i.modifiers.command && i.key_pressed(Key::ArrowUp)) {
+                Some(ScrollAction::DocTop)
+            } else if i.key_pressed(Key::End)
+                || (i.modifiers.command && i.key_pressed(Key::ArrowDown))
+            {
+                Some(ScrollAction::DocBottom)
+            } else if i.key_pressed(Key::PageUp) {
+                Some(ScrollAction::PageUp)
+            } else if i.key_pressed(Key::PageDown) {
+                Some(ScrollAction::PageDown)
+            } else if !i.modifiers.command && i.key_pressed(Key::ArrowUp) {
+                Some(ScrollAction::LineUp)
+            } else if !i.modifiers.command && i.key_pressed(Key::ArrowDown) {
+                Some(ScrollAction::LineDown)
+            } else {
+                None
+            }
+        });
+
+        let no_text_focus = !ui.ctx().egui_wants_keyboard_input();
+        let key_scrolled = no_text_focus && scroll_action.is_some();
+
+        if key_scrolled {
+            if let Some(action) = scroll_action {
+                let line_h = ui.text_style_height(&egui::TextStyle::Body);
+                let page_h = ui.available_height();
+
+                let delta_y = match action {
+                    ScrollAction::LineUp => line_h,
+                    ScrollAction::LineDown => -line_h,
+                    ScrollAction::PageUp => page_h,
+                    ScrollAction::PageDown => -page_h,
+                    ScrollAction::DocTop => f32::MAX / 2.0,
+                    ScrollAction::DocBottom => -f32::MAX / 2.0,
+                };
+
+                self.set_scroll_delta(egui::vec2(0.0, delta_y));
+            }
+        }
+
+        let user_scroll_input = ui.input(|i| i.is_scrolling()) || key_scrolled;
+        if user_scroll_input {
+            self.search_scroll_protection = 0;
+        }
+
+        user_scroll_input
     }
 }
 

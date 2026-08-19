@@ -113,61 +113,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
-            let (
-                scroll_line_up,
-                scroll_line_down,
-                scroll_page_up,
-                scroll_page_down,
-                scroll_doc_top,
-                scroll_doc_bottom,
-            ) = ui.ctx().input(|i| {
-                use egui::Key;
-                (
-                    !i.modifiers.command && i.key_pressed(Key::ArrowUp),
-                    !i.modifiers.command && i.key_pressed(Key::ArrowDown),
-                    i.key_pressed(Key::PageUp),
-                    i.key_pressed(Key::PageDown),
-                    i.key_pressed(Key::Home)
-                        || (i.modifiers.command && i.key_pressed(Key::ArrowUp)),
-                    i.key_pressed(Key::End)
-                        || (i.modifiers.command && i.key_pressed(Key::ArrowDown)),
-                )
-            });
-
-            // Only act on scroll keys when no text field has focus.
-            let no_text_focus = !ui.ctx().egui_wants_keyboard_input();
-            if no_text_focus {
-                let line_h = ui.text_style_height(&egui::TextStyle::Body);
-                let page_h = ui.available_height();
-                if scroll_line_up {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, line_h));
-                } else if scroll_line_down {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, -line_h));
-                } else if scroll_page_up {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, page_h));
-                } else if scroll_page_down {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, -page_h));
-                } else if scroll_doc_top {
-                    self.cache.set_scroll_delta(egui::vec2(0.0, f32::MAX / 2.0));
-                } else if scroll_doc_bottom {
-                    self.cache
-                        .set_scroll_delta(egui::vec2(0.0, -f32::MAX / 2.0));
-                }
-            }
-
-            // Detect any explicit user scroll input this frame: mouse wheel or
-            // keyboard arrows/pages (when a text field does not have focus).
-            // Passed to sync_active_match_to_viewport so that user scrolling
-            // immediately cancels post-search scroll protection and re-anchors
-            // the active match to the new viewport position.
-            let user_scrolled = ui.input(|i| i.is_scrolling())
-                || (no_text_focus
-                    && (scroll_line_up
-                        || scroll_line_down
-                        || scroll_page_up
-                        || scroll_page_down
-                        || scroll_doc_top
-                        || scroll_doc_bottom));
+            let user_scrolled = self.cache.handle_keyboard_scrolling(ui);
 
             ui.separator();
 
