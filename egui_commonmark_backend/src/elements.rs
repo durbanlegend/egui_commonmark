@@ -95,16 +95,19 @@ fn width_body_space(ui: &Ui) -> f32 {
 /// `intervals` are supplied, so that toggling or changing search matches
 /// never shifts egui's auto-generated widget IDs for subsequent widgets.
 ///
-/// Returns the widget's response, plus the on-screen rect of the active
-/// match (if `intervals` contains one and it is visible), which callers can
-/// use to scroll it into view.
+/// Returns the widget's response, the on-screen rect of the active match
+/// (if `intervals` contains one), and a `Vec` with one `Option<Rect>` per
+/// interval (in the same order as `intervals`): `Some(rect)` for each
+/// match whose byte range is non-empty, `None` otherwise. All rects are
+/// computed unconditionally even when the label is outside the clip rect,
+/// so callers can use them to track match positions during scrolling.
 pub fn label_with_search_highlight(
     ui: &mut Ui,
     text: RichText,
     intervals: &[(Range<usize>, bool)],
     match_bg: Color32,
     active_bg: Color32,
-) -> (egui::Response, Option<Rect>) {
+) -> (egui::Response, Option<Rect>, Vec<Option<Rect>>) {
     let widget_text: WidgetText = if intervals.is_empty() {
         text.into()
     } else {
@@ -121,14 +124,20 @@ pub fn label_with_search_highlight(
         egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), galley.text())
     });
 
-    // Compute the active-match rect unconditionally: `pos` and `galley` hold
+    // Compute rects for all intervals unconditionally: `pos` and `galley` hold
     // valid screen-coordinate data even when the label is outside the clip
-    // rect, and callers need this rect to scroll to a match that is currently
-    // off-screen. Only the *painting* step below stays inside `is_rect_visible`.
+    // rect. The active-match rect is used to scroll it into view; the full
+    // set is returned so callers can track every match's position during
+    // scrolling. Only the *painting* step below stays inside `is_rect_visible`.
+    let all_rects: Vec<Option<Rect>> = intervals
+        .iter()
+        .map(|(range, _)| highlight_rect_for_byte_range(&galley, pos, range.clone()))
+        .collect();
     let active_rect = intervals
         .iter()
-        .find(|(_, active)| *active)
-        .and_then(|(range, _)| highlight_rect_for_byte_range(&galley, pos, range.clone()));
+        .enumerate()
+        .find(|(_, (_, active))| *active)
+        .and_then(|(i, _)| all_rects[i]);
 
     if ui.is_rect_visible(response.rect) {
         let response_color = ui.style().visuals.text_color();
@@ -148,7 +157,7 @@ pub fn label_with_search_highlight(
         }
     }
 
-    (response, active_rect)
+    (response, active_rect, all_rects)
 }
 
 /// The rect (in screen coordinates) spanned by the given byte range within

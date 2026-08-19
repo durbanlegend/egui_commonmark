@@ -597,6 +597,15 @@ pub struct CommonMarkCache {
     /// The currently active (focused) search match, highlighted more
     /// prominently than the others.
     active_search_range: Option<Range<usize>>,
+    /// The y positions of the search matches, relative to the document
+    search_match_virtual_ys: Vec<f32>,
+    /// The y position of the top of the last viewport, relative to the document
+    last_viewport_virtual_top_y: f32,
+    /// Counts down after a search-initiated scroll (`go_to_match` /
+    /// `update_search_matches`) to prevent viewport-driven active-match
+    /// updates from overriding the scroll animation. Cleared immediately
+    /// when the user scrolls manually.
+    search_scroll_protection: u32,
     /// The ordinal number of the active search match
     active_match: Option<usize>,
     /// Set by [`CommonMarkCache::scroll_to_active_search_match`] and cleared
@@ -625,6 +634,9 @@ impl Default for CommonMarkCache {
             search_query: String::new(),
             search_ranges: Vec::new(),
             active_search_range: None,
+            search_match_virtual_ys: Vec::new(),
+            last_viewport_virtual_top_y: 0.0,
+            search_scroll_protection: 0,
             active_match: None,
             pending_scroll_to_active_match: false,
             pending_scroll_to_active_match_retries: 0,
@@ -759,6 +771,58 @@ impl CommonMarkCache {
         self.active_search_range.as_ref()
     }
 
+    /// The virtual-y (content-relative, scroll-independent) position of the
+    /// top of each search match's rendered rect, updated every frame by
+    /// [`show`](crate::CommonMarkViewer::show). Index-parallel to
+    /// [`search_ranges`](Self::search_ranges).
+    ///
+    /// Combined with [`last_viewport_virtual_top_y`](Self::last_viewport_virtual_top_y),
+    /// this lets you determine which matches were above, inside, and below
+    /// the viewport after the user scrolls — use it to update the active
+    /// match in the same way [`scroll.rs`] does via `viewport_start_byte_offset`.
+    ///
+    /// Values are 0.0 for any match whose containing text run has not yet
+    /// been rendered, and are only meaningful for the `show()` path (not
+    /// `show_scrollable`).
+    pub fn search_match_virtual_ys(&self) -> &[f32] {
+        &self.search_match_virtual_ys
+    }
+
+    /// The virtual-y of the top of the viewport as recorded by the most
+    /// recent [`show`](crate::CommonMarkViewer::show) call (0.0 before the
+    /// first call). "Virtual" means content-relative and scroll-independent:
+    /// it equals the current scroll offset from the top of the document.
+    ///
+    /// Compare against [`search_match_virtual_ys`](Self::search_match_virtual_ys)
+    /// to find the last match above (or first match at-or-after) the
+    /// current scroll position.
+    pub fn last_viewport_virtual_top_y(&self) -> f32 {
+        self.last_viewport_virtual_top_y
+    }
+
+    /// Updates the per-match virtual-y positions and the viewport top-y
+    /// recorded during a [`show`](crate::CommonMarkViewer::show) call.
+    /// `match_ys` is an iterator of `(match_index, virtual_y)` pairs.
+    ///
+    /// Used internally by the renderer; read the results via
+    /// [`search_match_virtual_ys`](Self::search_match_virtual_ys) and
+    /// [`last_viewport_virtual_top_y`](Self::last_viewport_virtual_top_y).
+    pub fn update_show_viewport(
+        &mut self,
+        match_ys: impl IntoIterator<Item = (usize, f32)>,
+        viewport_top_y: f32,
+    ) {
+        let n = self.search_ranges.len();
+        self.search_match_virtual_ys.clear();
+        self.search_match_virtual_ys.resize(n, 0.0);
+        for (idx, y) in match_ys {
+            if idx < n {
+                self.search_match_virtual_ys[idx] = y;
+            }
+        }
+        self.last_viewport_virtual_top_y = viewport_top_y;
+    }
+
     /// The ordinal number of the currently active (focused) search match, if any.
     pub fn active_match(&self) -> Option<usize> {
         self.active_match
@@ -864,6 +928,57 @@ impl CommonMarkCache {
         self.active_match = Some(nearest);
         self.sync_active_match();
         self.scroll_to_active_search_match();
+        self.search_scroll_protection = 30;
+    }
+
+    /// Synchronises the active search match to the current scroll position
+    /// for documents displayed with [`show`](crate::CommonMarkViewer::show).
+    ///
+    /// Call this once per frame immediately after `show()` returns, passing
+    /// `user_scrolled = true` whenever the frame received explicit user
+    /// scroll input (mouse wheel, keyboard arrow/page keys, etc.).
+    ///
+    /// When `user_scrolled` is `true`, any ongoing post-search scroll
+    /// protection is cancelled and the active match re-anchors immediately
+    /// to the top of the viewport. When `false`, the protection counter
+    /// winds down automatically over the following ~30 frames (enough for
+    /// a typical scroll-to-match animation to settle), after which normal
+    /// syncing resumes.
+    ///
+    /// The active match is set to the first match at or after the viewport
+    /// top, so that pressing Next from the current scroll position advances
+    /// to the next unseen match. `scroll_to_active_search_match` is
+    /// deliberately *not* called: the viewport is already where the user
+    /// put it.
+    ///
+    /// For documents displayed with
+    /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable),
+    /// use [`viewport_start_byte_offset`](Self::viewport_start_byte_offset)
+    /// instead (see the `scroll` example).
+    pub fn sync_active_match_to_viewport(&mut self, user_scrolled: bool) {
+        if user_scrolled {
+            self.search_scroll_protection = 0;
+        }
+        if self.search_scroll_protection > 0 {
+            self.search_scroll_protection -= 1;
+            return;
+        }
+        if self.search_ranges.is_empty() || self.search_match_virtual_ys.is_empty() {
+            return;
+        }
+        let vt = self.last_viewport_virtual_top_y;
+        let len = self.search_match_virtual_ys.len();
+        let nearest = self
+            .search_match_virtual_ys
+            .iter()
+            .position(|&y| y >= vt)
+            .unwrap_or(len - 1);
+        if self.active_match != Some(nearest) {
+            self.active_match = Some(nearest);
+            self.sync_active_match();
+            // Do NOT call scroll_to_active_search_match: the viewport is
+            // already where the user put it.
+        }
     }
 
     // Update the active search range to the desired ordinal value
@@ -891,6 +1006,7 @@ impl CommonMarkCache {
         self.active_match = Some(next as usize);
         self.sync_active_match();
         self.scroll_to_active_search_match();
+        self.search_scroll_protection = 30;
     }
 
     /// Clear the cache for all scrollable elements

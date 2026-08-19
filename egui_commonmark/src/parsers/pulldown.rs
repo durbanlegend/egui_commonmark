@@ -95,6 +95,14 @@ pub struct CommonMarkViewerInternal {
     /// centers) the active search match the moment it is found, then clears
     /// this flag so it only happens once per pass.
     want_scroll_to_active_match: bool,
+    /// Screen-space y of the document content origin for this render pass,
+    /// captured once at the top of `show()`. Subtracting this from any
+    /// widget's screen y gives a scroll-independent virtual y.
+    content_origin_y: f32,
+    /// `(global_match_index, virtual_y)` pairs accumulated across all
+    /// `event_text` calls during this render pass. Flushed into
+    /// [`CommonMarkCache`] at the end of `show()` (non-scrollable path only).
+    search_match_ys_scratch: Vec<(usize, f32)>,
 }
 
 pub(crate) struct CheckboxClickEvent {
@@ -121,6 +129,8 @@ impl CommonMarkViewerInternal {
             deferred_scroll_to_heading: None,
             any_image_loading: false,
             want_scroll_to_active_match: false,
+            content_origin_y: 0.0,
+            search_match_ys_scratch: Vec::new(),
         }
     }
 }
@@ -168,6 +178,7 @@ impl CommonMarkViewerInternal {
 
         self.any_image_loading = false;
         self.want_scroll_to_active_match = cache.take_pending_scroll_to_active_match();
+        self.search_match_ys_scratch.clear();
         let max_width = options.max_width(ui);
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -188,6 +199,7 @@ impl CommonMarkViewerInternal {
             // cursor position gives virtual (content-relative) y comparable to
             // viewport.min/max.y from show_viewport.
             let content_origin_y = ui.next_widget_position().y;
+            self.content_origin_y = content_origin_y;
 
             // Cursor at the visual top of the current block, captured at
             // Start(Block) so that vstart reflects the block top, not its bottom.
@@ -293,6 +305,12 @@ impl CommonMarkViewerInternal {
                     scroll_cache(cache, &source_id).page_size =
                         Some(egui::vec2(max_width, final_y - content_origin_y));
                 }
+            } else {
+                // Non-scrollable show() path: flush per-match virtual-y positions
+                // and the current viewport top so callers can sync the active
+                // match after the user scrolls.
+                let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
+                cache.update_show_viewport(self.search_match_ys_scratch.drain(..), viewport_top_y);
             }
         });
 
@@ -888,13 +906,35 @@ impl CommonMarkViewerInternal {
                 &src_span,
                 text.len(),
             );
-            let (_, active_rect) = label_with_search_highlight(
+            let (_, active_rect, all_rects) = label_with_search_highlight(
                 ui,
                 rich_text,
                 &intervals,
                 options.search_match_bg(ui),
                 options.search_active_match_bg(ui),
             );
+
+            // Record the virtual-y (scroll-independent) position for each
+            // global match that falls in this text run. global_match_indices[j]
+            // corresponds to intervals[j] and all_rects[j]: both iterate
+            // search_ranges in document order with the same filter, so the
+            // j-th surviving entry is the same match in both.
+            let content_origin_y = self.content_origin_y;
+            let global_match_indices: Vec<usize> = cache
+                .search_ranges()
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    r.start < r.end && r.start < src_span.end && r.end > src_span.start
+                })
+                .map(|(i, _)| i)
+                .collect();
+            for (global_idx, maybe_rect) in global_match_indices.iter().zip(all_rects.iter()) {
+                if let Some(rect) = maybe_rect {
+                    self.search_match_ys_scratch
+                        .push((*global_idx, rect.min.y - content_origin_y));
+                }
+            }
 
             if self.want_scroll_to_active_match
                 && let Some(rect) = active_rect

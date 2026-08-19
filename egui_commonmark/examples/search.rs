@@ -135,7 +135,8 @@ impl eframe::App for App {
             });
 
             // Only act on scroll keys when no text field has focus.
-            if !ui.ctx().egui_wants_keyboard_input() {
+            let no_text_focus = !ui.ctx().egui_wants_keyboard_input();
+            if no_text_focus {
                 let line_h = ui.text_style_height(&egui::TextStyle::Body);
                 let page_h = ui.available_height();
                 if scroll_line_up {
@@ -154,12 +155,31 @@ impl eframe::App for App {
                 }
             }
 
+            // Detect any explicit user scroll input this frame: mouse wheel or
+            // keyboard arrows/pages (when a text field does not have focus).
+            // Passed to sync_active_match_to_viewport so that user scrolling
+            // immediately cancels post-search scroll protection and re-anchors
+            // the active match to the new viewport position.
+            let user_scrolled = ui.input(|i| i.is_scrolling())
+                || (no_text_focus
+                    && (scroll_line_up
+                        || scroll_line_down
+                        || scroll_page_up
+                        || scroll_page_down
+                        || scroll_doc_top
+                        || scroll_doc_bottom));
+
             ui.separator();
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 self.cache.apply_pending_scroll_delta(ui);
                 CommonMarkViewer::new().show(ui, &mut self.cache, MARKDOWN);
             });
+
+            // After show() the cache holds fresh per-match virtual-y positions
+            // and the current viewport top. Sync the active match so that
+            // Next/Previous advance from wherever the user has scrolled to.
+            self.cache.sync_active_match_to_viewport(user_scrolled);
         });
     }
 }
