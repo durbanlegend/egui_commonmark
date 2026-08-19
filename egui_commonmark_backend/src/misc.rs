@@ -568,16 +568,6 @@ fn default_theme(ui: &Ui) -> &str {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ScrollAction {
-    LineUp,
-    LineDown,
-    PageUp,
-    PageDown,
-    DocTop,
-    DocBottom,
-}
-
 /// A cache used for storing content such as images.
 #[derive(Debug)]
 pub struct CommonMarkCache {
@@ -611,6 +601,10 @@ pub struct CommonMarkCache {
     search_match_virtual_ys: Vec<f32>,
     /// The y position of the top of the last viewport, relative to the document
     last_viewport_virtual_top_y: f32,
+    /// The byte offset of the last viewport, relative to the document, for
+    /// use with `show_scrollable`. Used to detect viewport movement without
+    /// relying on input events.
+    last_viewport_offset: usize,
     /// Counts down after a search-initiated scroll (`go_to_match` /
     /// `update_search_matches`) to prevent viewport-driven active-match
     /// updates from overriding the scroll animation. Cleared immediately
@@ -646,6 +640,7 @@ impl Default for CommonMarkCache {
             active_search_range: None,
             search_match_virtual_ys: Vec::new(),
             last_viewport_virtual_top_y: 0.0,
+            last_viewport_offset: 0,
             search_scroll_protection: 0,
             active_match: None,
             pending_scroll_to_active_match: false,
@@ -893,6 +888,19 @@ impl CommonMarkCache {
     /// `CommonMarkCache::scroll_to_active_search_match`'s docs: this never
     /// forces a full document re-render), so this shoud stay responsive.
     pub fn update_search_matches(&mut self, egui_source_id: &str, content: &str) {
+        // Anchor to the byte position of the currently active match so that
+        // adding/removing characters from the query stays on the same spot.
+        // Fall back to the viewport position for a fresh (no active match)
+        // search.  Using viewport_start here on a query change would jump
+        // backwards whenever the viewport centre is a couple of sections
+        // before the active match (i.e. the match is centred on screen).
+        let anchor = self
+            .active_match
+            .and_then(|i| self.search_ranges.get(i))
+            .map(|r| r.start)
+            .or_else(|| self.viewport_start_byte_offset(egui_source_id))
+            .unwrap_or(0);
+
         self.search_ranges.clear();
         if !self.search_query.is_empty() {
             let query = self.search_query.to_lowercase();
@@ -928,15 +936,17 @@ impl CommonMarkCache {
             return;
         }
 
-        let cursor = self.viewport_start_byte_offset(egui_source_id).unwrap_or(0);
         let nearest = self
             .search_ranges
             .iter()
-            .position(|r| r.start >= cursor)
+            .position(|r| r.start >= anchor)
             .unwrap_or(0);
         self.active_match = Some(nearest);
         self.sync_active_match();
         self.scroll_to_active_search_match();
+        // Suppress viewport-sync for ~30 frames so the animation toward the
+        // new match is not immediately overridden by the centering drift
+        // (viewport start lands before the active match when centred on screen).
         self.search_scroll_protection = 30;
     }
 
@@ -962,7 +972,7 @@ impl CommonMarkCache {
     ///
     /// For documents displayed with
     /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable),
-    /// use [`viewport_start_byte_offset`](Self::viewport_start_byte_offset)
+    /// use [`sync_scrollable_active_match`](Self::sync_scrollable_active_match)
     /// instead (see the `scroll` example).
     pub fn sync_active_match_to_viewport(&mut self, user_scrolled: bool) {
         if user_scrolled {
@@ -975,6 +985,13 @@ impl CommonMarkCache {
         if self.search_ranges.is_empty() || self.search_match_virtual_ys.is_empty() {
             return;
         }
+
+        // Removed to allow active search to resume from first visible match
+        // (which becomes the active match) after a jump to a heading.
+        // if !user_scrolled {
+        //     return;
+        // }
+
         let vt = self.last_viewport_virtual_top_y;
         let len = self.search_match_virtual_ys.len();
         let nearest = self
@@ -984,9 +1001,56 @@ impl CommonMarkCache {
             .unwrap_or(len - 1);
         if self.active_match != Some(nearest) {
             self.active_match = Some(nearest);
+            // dbg!(&self.active_match);
             self.sync_active_match();
             // Do NOT call scroll_to_active_search_match: the viewport is
             // already where the user put it.
+        }
+    }
+
+    /// After show_scrollable the viewer has applied any pending scroll
+    /// delta and updated the byte-offset tracker.  Sync active_match
+    /// whenever the viewport byte offset actually changed AND no search
+    /// scroll is still animating.  This fires on every animation frame
+    /// (not just the key-press frame), so even large PageDown jumps
+    /// settle to the correct match once the animation completes.
+    pub fn sync_scrollable_active_match(
+        &mut self,
+        egui_source_id: &str,
+        viewport_cache: bool,
+        user_scrolled: bool,
+    ) {
+        if !viewport_cache {
+            self.sync_active_match_to_viewport(user_scrolled);
+            return;
+        }
+
+        let current_offset = self.viewport_start_byte_offset(egui_source_id).unwrap_or(0);
+
+        if !self.search_ranges().is_empty()
+            && self.search_scroll_protection == 0
+            && current_offset != self.last_viewport_offset
+        {
+            let len = self.search_ranges().len();
+            let idx = self
+                .search_ranges()
+                .partition_point(|r| r.start < current_offset);
+            let nearest = if idx > 0 {
+                idx - 1
+            } else {
+                len.saturating_sub(1)
+            };
+            if self.active_match() != Some(nearest) {
+                self.active_match = Some(nearest);
+                self.sync_active_match();
+                // Do NOT call scroll_to_active_search_match here: the
+                // viewport is already where the user put it.
+            }
+        }
+
+        self.last_viewport_offset = current_offset;
+        if self.search_scroll_protection > 0 {
+            self.search_scroll_protection -= 1;
         }
     }
 
@@ -1101,53 +1165,52 @@ impl CommonMarkCache {
     /// Handles keyboard scrolling input and updates cache delta.
     /// Returns `true` if any explicit user scrolling (wheel or keyboard) occurred.
     pub fn handle_keyboard_scrolling(&mut self, ui: &egui::Ui) -> bool {
-        let scroll_action = ui.ctx().input(|i| {
-            use egui::Key;
-            if i.key_pressed(Key::Home) || (i.modifiers.command && i.key_pressed(Key::ArrowUp)) {
-                Some(ScrollAction::DocTop)
-            } else if i.key_pressed(Key::End)
-                || (i.modifiers.command && i.key_pressed(Key::ArrowDown))
-            {
-                Some(ScrollAction::DocBottom)
-            } else if i.key_pressed(Key::PageUp) {
-                Some(ScrollAction::PageUp)
-            } else if i.key_pressed(Key::PageDown) {
-                Some(ScrollAction::PageDown)
-            } else if !i.modifiers.command && i.key_pressed(Key::ArrowUp) {
-                Some(ScrollAction::LineUp)
-            } else if !i.modifiers.command && i.key_pressed(Key::ArrowDown) {
-                Some(ScrollAction::LineDown)
-            } else {
-                None
-            }
-        });
-
         let no_text_focus = !ui.ctx().egui_wants_keyboard_input();
-        let key_scrolled = no_text_focus && scroll_action.is_some();
 
-        if key_scrolled {
-            if let Some(action) = scroll_action {
-                let line_h = ui.text_style_height(&egui::TextStyle::Body);
-                let page_h = ui.available_height();
+        // Calculate line and page heights up front
+        let line_h = ui.text_style_height(&egui::TextStyle::Body);
+        let page_h = ui.available_height();
 
-                let delta_y = match action {
-                    ScrollAction::LineUp => line_h,
-                    ScrollAction::LineDown => -line_h,
-                    ScrollAction::PageUp => page_h,
-                    ScrollAction::PageDown => -page_h,
-                    ScrollAction::DocTop => f32::MAX / 2.0,
-                    ScrollAction::DocBottom => -f32::MAX / 2.0,
-                };
+        // Map key inputs directly to vertical scroll offsets (f32)
+        let key_scroll_delta = no_text_focus
+            .then(|| {
+                ui.ctx().input(|i| {
+                    use egui::Key;
+                    if i.key_pressed(Key::Home)
+                        || (i.modifiers.command && i.key_pressed(Key::ArrowUp))
+                    {
+                        Some(f32::MAX / 2.0)
+                    } else if i.key_pressed(Key::End)
+                        || (i.modifiers.command && i.key_pressed(Key::ArrowDown))
+                    {
+                        Some(-f32::MAX / 2.0)
+                    } else if i.key_pressed(Key::PageUp) {
+                        Some(page_h)
+                    } else if i.key_pressed(Key::PageDown) {
+                        Some(-page_h)
+                    } else if !i.modifiers.command && i.key_pressed(Key::ArrowUp) {
+                        Some(line_h)
+                    } else if !i.modifiers.command && i.key_pressed(Key::ArrowDown) {
+                        Some(-line_h)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .flatten();
 
-                self.set_scroll_delta(egui::vec2(0.0, delta_y));
-            }
+        // Apply scroll delta if a key was pressed
+        if let Some(delta_y) = key_scroll_delta {
+            self.set_scroll_delta(egui::vec2(0.0, delta_y));
         }
 
-        let user_scroll_input = ui.input(|i| i.is_scrolling()) || key_scrolled;
+        let user_scroll_input = ui.input(|i| i.is_scrolling()) || key_scroll_delta.is_some();
+
         if user_scroll_input {
             self.search_scroll_protection = 0;
         }
 
+        // Return combined user scroll status
         user_scroll_input
     }
 }
