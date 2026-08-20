@@ -382,7 +382,7 @@ impl CommonMarkViewerInternal {
         // navigation works even when the target is outside the rendered slice.
         let pending_scroll_y: Option<f32> = {
             let slug_owned = cache.scroll_to_id_target().map(ToOwned::to_owned);
-            slug_owned.as_ref().map_or(None, |slug| {
+            slug_owned.as_ref().and_then(|slug| {
                 let sc = scroll_cache(cache, &source_id);
                 if let Some(&y) = sc.heading_y_positions.get(slug) {
                     cache.scroll_to_id_target_mut().take();

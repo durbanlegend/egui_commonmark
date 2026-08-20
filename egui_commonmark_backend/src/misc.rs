@@ -1008,11 +1008,11 @@ impl CommonMarkCache {
         }
     }
 
-    /// After show_scrollable the viewer has applied any pending scroll
-    /// delta and updated the byte-offset tracker.  Sync active_match
+    /// After `show_scrollable` the viewer has applied any pending scroll
+    /// delta and updated the byte-offset tracker.  Sync `active_match`
     /// whenever the viewport byte offset actually changed AND no search
     /// scroll is still animating.  This fires on every animation frame
-    /// (not just the key-press frame), so even large PageDown jumps
+    /// (not just the key-press frame), so even large `PageDown` jumps
     /// settle to the correct match once the animation completes.
     pub fn sync_scrollable_active_match(
         &mut self,
@@ -1068,15 +1068,15 @@ impl CommonMarkCache {
         if self.search_ranges.is_empty() {
             return;
         }
-        let len = self.search_ranges.len() as isize;
+        let len = self.search_ranges.len().cast_signed();
         let next = match self.active_match {
-            Some(i) => (i as isize + delta).rem_euclid(len),
+            Some(i) => (i.cast_signed() + delta).rem_euclid(len),
             // First navigation after a fresh search: start at the first
             // match for Next, the last one for Previous.
             None if delta >= 0 => 0,
-            None => len - 1,
+            None => len.saturating_sub(1),
         };
-        self.active_match = Some(next as usize);
+        self.active_match = Some(next.cast_unsigned());
         self.sync_active_match();
         self.scroll_to_active_search_match();
         self.search_scroll_protection = 30;
@@ -1204,7 +1204,8 @@ impl CommonMarkCache {
             self.set_scroll_delta(egui::vec2(0.0, delta_y));
         }
 
-        let user_scroll_input = ui.input(|i| i.is_scrolling()) || key_scroll_delta.is_some();
+        let user_scroll_input =
+            ui.input(egui::InputState::is_scrolling) || key_scroll_delta.is_some();
 
         if user_scroll_input {
             self.search_scroll_protection = 0;
