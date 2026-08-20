@@ -34,11 +34,7 @@ impl eframe::App for App {
                         .update_search_matches(EGUI_SOURCE_ID, &self.content);
                     // self.update_search_matches();
                 }
-                // Checked unconditionally (not gated on the text edit still
-                // having focus): a single-line TextEdit surrenders focus the
-                // moment Enter is pressed, so `response.has_focus()` would
-                // already be false here. We re-request focus below so that
-                // repeated Enter presses keep working without having to
+                // Re-request focus so that repeated Enter presses keep working without having to
                 // click back into the box each time.
                 let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if enter_pressed {

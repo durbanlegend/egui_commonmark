@@ -900,12 +900,14 @@ impl CommonMarkViewerInternal {
             link.push_text(self.text_style.to_richtext(ui, &text), src_span);
         } else {
             let rich_text = self.text_style.to_richtext(ui, &text);
-            let intervals = search_intervals(
-                cache.search_ranges(),
-                cache.active_search_range(),
-                &src_span,
-                text.len(),
-            );
+            let ranges = cache.search_ranges();
+            if ranges.is_empty() {
+                ui.label(rich_text);
+                return;
+            }
+
+            let intervals =
+                search_intervals(ranges, cache.active_search_range(), &src_span, text.len());
             let (_, active_rect, all_rects) = label_with_search_highlight(
                 ui,
                 rich_text,

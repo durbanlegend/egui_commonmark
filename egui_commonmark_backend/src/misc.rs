@@ -269,12 +269,18 @@ impl Link {
             return false;
         }
 
-        let intervals = crate::search::chunked_search_intervals(
-            &chunks,
-            cache.search_ranges(),
-            cache.active_search_range(),
-        );
-        let has_active_match = intervals.iter().any(|(_, is_active)| *is_active);
+        let ranges = cache.search_ranges();
+        let (intervals, has_active_match) = if ranges.is_empty() {
+            (vec![], false)
+        } else {
+            let intervals = crate::search::chunked_search_intervals(
+                    &chunks,
+                    ranges,
+                    cache.active_search_range(),
+                );
+            let has_active_match = intervals.iter().any(|(_, is_active)| *is_active);
+            (intervals, has_active_match)
+        };
 
         let mut layout_job = LayoutJob::default();
         for t in text {
@@ -312,7 +318,7 @@ impl Link {
             ui.hyperlink_to(layout_job, destination)
         };
 
-        if want_scroll_to_active_match && has_active_match {
+        if has_active_match && want_scroll_to_active_match {
             ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
             true
         } else {
