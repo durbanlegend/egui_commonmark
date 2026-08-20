@@ -597,6 +597,8 @@ pub struct CommonMarkCache {
     /// The currently active (focused) search match, highlighted more
     /// prominently than the others.
     active_search_range: Option<Range<usize>>,
+    /// The ordinal number of the active search match
+    active_match: Option<usize>,
     /// The y positions of the search matches, relative to the document
     search_match_virtual_ys: Vec<f32>,
     /// The y position of the top of the last viewport, relative to the document
@@ -610,8 +612,6 @@ pub struct CommonMarkCache {
     /// updates from overriding the scroll animation. Cleared immediately
     /// when the user scrolls manually.
     search_scroll_protection: u32,
-    /// The ordinal number of the active search match
-    active_match: Option<usize>,
     /// Set by [`CommonMarkCache::scroll_to_active_search_match`] and cleared
     /// once the render pass that finds and scrolls to the active match runs.
     pending_scroll_to_active_match: bool,
@@ -638,11 +638,11 @@ impl Default for CommonMarkCache {
             search_query: String::new(),
             search_ranges: Vec::new(),
             active_search_range: None,
+            active_match: None,
             search_match_virtual_ys: Vec::new(),
             last_viewport_virtual_top_y: 0.0,
             last_viewport_offset: 0,
             search_scroll_protection: 0,
-            active_match: None,
             pending_scroll_to_active_match: false,
             pending_scroll_to_active_match_retries: 0,
         }
