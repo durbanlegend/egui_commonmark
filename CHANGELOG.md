@@ -4,12 +4,21 @@
 
 ### Added
 
+- `pending_scroll_delta` and `set_scroll_delta` for keyboard scrolling with
+  `show_scrollable` ([#101](https://github.com/lampsitter/egui_commonmark/pull/101) by [@durbanlegend](https://github.com/durbanlegend))
+- `viewport_cache` to disable or enable viewport cache for `show_scrollable`
+  ([#101](https://github.com/lampsitter/egui_commonmark/pull/101) by [@durbanlegend](https://github.com/durbanlegend))
 - Search-match highlighting via `CommonMarkCache::set_search_ranges` and
   `set_active_search_range`. Matches are highlighted inside body text *and*
   fenced/indented code blocks (including with syntax highlighting enabled).
   Call `CommonMarkCache::scroll_to_active_search_match` to scroll (and
   center) the currently active match into view, including when using
   `show_scrollable`'s viewport cache.
+
+### Fixed
+
+- Fix `show_scrollable` to support seamless scrolling of large documents
+  ([#98](https://github.com/lampsitter/egui_commonmark/pull/98) by [@durbanlegend](https://github.com/durbanlegend))
 
 ## 0.25.0 - 2026-08-05
 
@@ -395,4 +404,3 @@ An explicit dependency update might be needed to use egui 0.22: `cargo update -p
 
 - No longer panic upon unknown syntax theme.
 - Fixed incorrect line endings within headings.
-
