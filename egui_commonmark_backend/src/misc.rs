@@ -274,10 +274,10 @@ impl Link {
             (vec![], false)
         } else {
             let intervals = crate::search::chunked_search_intervals(
-                    &chunks,
-                    ranges,
-                    cache.active_search_range(),
-                );
+                &chunks,
+                ranges,
+                cache.active_search_range(),
+            );
             let has_active_match = intervals.iter().any(|(_, is_active)| *is_active);
             (intervals, has_active_match)
         };
@@ -938,7 +938,7 @@ impl CommonMarkCache {
 
         if self.search_ranges.is_empty() {
             self.active_match = None;
-            self.sync_active_match();
+            self.sync_active_search_range();
             return;
         }
 
@@ -948,7 +948,7 @@ impl CommonMarkCache {
             .position(|r| r.start >= anchor)
             .unwrap_or(0);
         self.active_match = Some(nearest);
-        self.sync_active_match();
+        self.sync_active_search_range();
         self.scroll_to_active_search_match();
         // Suppress viewport-sync for ~30 frames so the animation toward the
         // new match is not immediately overridden by the centering drift
@@ -980,7 +980,7 @@ impl CommonMarkCache {
     /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable),
     /// use [`sync_scrollable_active_match`](Self::sync_scrollable_active_match)
     /// instead (see the `scroll` example).
-    pub fn sync_active_match_to_viewport(&mut self, user_scrolled: bool) {
+    pub fn sync_active_match(&mut self, user_scrolled: bool) {
         if user_scrolled {
             self.search_scroll_protection = 0;
         }
@@ -1007,8 +1007,7 @@ impl CommonMarkCache {
             .unwrap_or(len - 1);
         if self.active_match != Some(nearest) {
             self.active_match = Some(nearest);
-            // dbg!(&self.active_match);
-            self.sync_active_match();
+            self.sync_active_search_range();
             // Do NOT call scroll_to_active_search_match: the viewport is
             // already where the user put it.
         }
@@ -1027,7 +1026,7 @@ impl CommonMarkCache {
         user_scrolled: bool,
     ) {
         if !viewport_cache {
-            self.sync_active_match_to_viewport(user_scrolled);
+            self.sync_active_match(user_scrolled);
             return;
         }
 
@@ -1048,7 +1047,7 @@ impl CommonMarkCache {
             };
             if self.active_match() != Some(nearest) {
                 self.active_match = Some(nearest);
-                self.sync_active_match();
+                self.sync_active_search_range();
                 // Do NOT call scroll_to_active_search_match here: the
                 // viewport is already where the user put it.
             }
@@ -1061,7 +1060,7 @@ impl CommonMarkCache {
     }
 
     // Update the active search range to the desired ordinal value
-    fn sync_active_match(&mut self) {
+    fn sync_active_search_range(&mut self) {
         self.set_active_search_range(
             self.active_match
                 .and_then(|i| self.search_ranges.get(i))
@@ -1083,7 +1082,7 @@ impl CommonMarkCache {
             None => len.saturating_sub(1),
         };
         self.active_match = Some(next.cast_unsigned());
-        self.sync_active_match();
+        self.sync_active_search_range();
         self.scroll_to_active_search_match();
         self.search_scroll_protection = 30;
     }

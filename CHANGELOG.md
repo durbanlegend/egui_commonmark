@@ -9,8 +9,9 @@
 - `viewport_cache` to disable or enable viewport cache for `show_scrollable`
   ([#101](https://github.com/lampsitter/egui_commonmark/pull/101) by [@durbanlegend](https://github.com/durbanlegend))
 - Search-match highlighting via `CommonMarkCache::set_search_ranges` and
-  `set_active_search_range`. Matches are highlighted inside body text *and*
-  fenced/indented code blocks (including with syntax highlighting enabled).
+  `set_active_search_range`. Matches are highlighted inside body text, link
+  text and fenced/indented code blocks (including with syntax highlighting enabled).
+- Search and scroll support built into `CommonMarkCache`
   Call `CommonMarkCache::scroll_to_active_search_match` to scroll (and
   center) the currently active match into view, including when using
   `show_scrollable`'s viewport cache.

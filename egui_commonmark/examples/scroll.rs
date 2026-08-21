@@ -11,12 +11,11 @@ use std::env;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
-const EGUI_SOURCE_ID: &'static str = "scroll_example";
-
 struct App {
     cache: CommonMarkCache,
-    content: String,
+    egui_source_id: String,
     viewport_cache: bool,
+    content: String,
 }
 
 impl App {}
@@ -31,8 +30,7 @@ impl eframe::App for App {
                 let response = ui.text_edit_singleline(&mut self.cache.search_query);
                 if response.changed() {
                     self.cache
-                        .update_search_matches(EGUI_SOURCE_ID, &self.content);
-                    // self.update_search_matches();
+                        .update_search_matches(&self.egui_source_id, &self.content);
                 }
                 // Re-request focus so that repeated Enter presses keep working without having to
                 // click back into the box each time.
@@ -63,16 +61,23 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
+            // Handle any keyboard scrolling requests
             let user_scrolled = self.cache.handle_keyboard_scrolling(ui);
 
+            // `show_scrollable` will automatically scroll by any accumulated scroll amount
+            // before rendering
             CommonMarkViewer::new()
                 .max_image_width(Some(512))
                 .enable_scroll_to_heading(true)
                 .viewport_cache(self.viewport_cache)
-                .show_scrollable(EGUI_SOURCE_ID, ui, &mut self.cache, &self.content);
+                .show_scrollable(&self.egui_source_id, ui, &mut self.cache, &self.content);
 
+            // Use the scrollable sync method to sync any search to the current viewport so
+            // that Next/Previous will continue from here instead of from its previous location.
+            // Unlike the regular `sync_active_match` method, this also supports new searches
+            // because it is confined to a range of known split points from the last full render.
             self.cache.sync_scrollable_active_match(
-                EGUI_SOURCE_ID,
+                &self.egui_source_id,
                 self.viewport_cache,
                 user_scrolled,
             );
@@ -104,8 +109,9 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
-                content,
+                egui_source_id: String::from("scroll_example"),
                 viewport_cache,
+                content,
             }))
         }),
     )

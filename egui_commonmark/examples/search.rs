@@ -113,19 +113,35 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
+            // Handle any keyboard scrolling requests
             let user_scrolled = self.cache.handle_keyboard_scrolling(ui);
 
             ui.separator();
 
+            // Optional custom search match highlight colors.
+            // Using `egui` themed colors saves us interrogating `ui.visuals()` to see
+            // if we're in light or dark mode and choosing suitable colors accordingly.
+            let active_bg = ui.visuals().selection.bg_fill;
+            let match_bg = active_bg.gamma_multiply(0.6);
+
             egui::ScrollArea::vertical().show(ui, |ui| {
+                // Scroll by accumulated scroll amount before rendering
                 self.cache.apply_pending_scroll_delta(ui);
-                CommonMarkViewer::new().show(ui, &mut self.cache, MARKDOWN);
+                CommonMarkViewer::new()
+                    // Optionally override default search match colors
+                    .search_active_match_color(active_bg)
+                    .search_match_color(match_bg)
+                    .show(ui, &mut self.cache, MARKDOWN);
             });
 
-            // After show() the cache holds fresh per-match virtual-y positions
-            // and the current viewport top. Sync the active match so that
-            // Next/Previous advance from wherever the user has scrolled to.
-            self.cache.sync_active_match_to_viewport(user_scrolled);
+            // Use the regular sync method to sync any active search to the current viewport so
+            // that Next/Previous will continue from here instead of from its previous location.
+            // With `CommonMarkViewer::show`, this only syncs an existing search. To sync a new
+            // search would require a full render to extract virtual-y positions for all the
+            // matches, so instead we start a new search from the top of the document.
+            // See the `scroll` example for a `show_scrollable` example that (in viewport
+            // caching mode) does not have this restriction.
+            self.cache.sync_active_match(user_scrolled);
         });
     }
 }

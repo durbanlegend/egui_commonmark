@@ -341,8 +341,8 @@ impl CommonMarkViewerInternal {
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    self.show(ui, cache, options, text, None);
                     apply_pending_scroll_delta(cache, ui);
+                    self.show(ui, cache, options, text, None);
                 });
             return;
         }
@@ -352,8 +352,8 @@ impl CommonMarkViewerInternal {
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    self.show(ui, cache, options, text, Some(source_id));
                     apply_pending_scroll_delta(cache, ui);
+                    self.show(ui, cache, options, text, Some(source_id));
                 });
             scroll_cache(cache, &source_id).available_size = available_size;
             return;
@@ -1237,8 +1237,8 @@ mod perf_tests {
         }
     }
 
-    /// Reproduces the reported bug: clicking Next/Previous was horrendously
-    /// slow even when the target match is already on the currently visible
+    /// Reproduces the reported bug: clicking Next/Previous was pathologically
+    /// slow even when the target match was already on the currently visible
     /// page, because every call to `scroll_to_active_search_match` forced a
     /// full document re-render regardless of visibility.
     #[test]
