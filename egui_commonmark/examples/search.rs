@@ -131,16 +131,13 @@ impl eframe::App for App {
                     // Optionally override default search match colors
                     .search_active_match_color(active_bg)
                     .search_match_color(match_bg)
-                    .show(ui, &mut self.cache, MARKDOWN);
+                    .show_with_id("search_example", ui, &mut self.cache, MARKDOWN);
             });
 
-            // Use the regular sync method to sync any active search to the current viewport so
-            // that Next/Previous will continue from here instead of from its previous location.
-            // With `CommonMarkViewer::show`, this only syncs an existing search. To sync a new
-            // search would require a full render to extract virtual-y positions for all the
-            // matches, so instead we start a new search from the top of the document.
-            // See the `scroll` example for a `show_scrollable` example that (in viewport
-            // caching mode) does not have this restriction.
+            // Sync the active match to the current viewport so that Next/Previous advance
+            // from the current scroll position. Because show_with_id builds split points on
+            // every layout-width change, update_search_matches can also anchor fresh searches
+            // to the viewport — not just continue an existing one.
             self.cache.sync_active_match(user_scrolled);
         });
     }

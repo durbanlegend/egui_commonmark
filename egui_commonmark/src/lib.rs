@@ -261,7 +261,11 @@ impl<'f> CommonMarkViewer<'f> {
         self
     }
 
-    /// Shows rendered markdown
+    /// Shows rendered markdown.
+    ///
+    /// For viewport-aware search (anchoring new searches to the current scroll
+    /// position rather than the document top), use
+    /// [`show_with_id`](Self::show_with_id) instead.
     pub fn show(
         self,
         ui: &mut egui::Ui,
@@ -279,6 +283,34 @@ impl<'f> CommonMarkViewer<'f> {
         );
 
         response
+    }
+
+    /// Like [`show`](Self::show), but tracks the viewport position so that
+    /// [`update_search_matches`](CommonMarkCache::update_search_matches) anchors
+    /// new searches to the current scroll location instead of always starting
+    /// from the document top.
+    ///
+    /// `source_id` must be stable across frames and unique to this viewer
+    /// instance. Pass the same string to `update_search_matches` and
+    /// [`sync_active_match`](CommonMarkCache::sync_active_match).
+    ///
+    /// Split-point positions are rebuilt when the available width changes and
+    /// cached otherwise, so the overhead is paid only on the first frame and
+    /// after window resizes.
+    ///
+    /// For large documents where rendering the full content every frame is too
+    /// slow, prefer [`show_scrollable`](Self::show_scrollable), which shares
+    /// the same viewport-tracking capability but additionally renders only the
+    /// visible slice each frame.
+    pub fn show_with_id(
+        mut self,
+        source_id: impl egui::AsId,
+        ui: &mut egui::Ui,
+        cache: &mut CommonMarkCache,
+        text: &str,
+    ) -> egui::InnerResponse<()> {
+        self.options.source_id = Some(egui::Id::new(source_id));
+        self.show(ui, cache, text)
     }
 
     /// Shows rendered markdown, and allows the rendered ui to mutate the source text.

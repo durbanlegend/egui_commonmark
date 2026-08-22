@@ -180,6 +180,27 @@ impl CommonMarkViewerInternal {
         self.want_scroll_to_active_match = cache.take_pending_scroll_to_active_match();
         self.search_match_ys_scratch.clear();
         let max_width = options.max_width(ui);
+
+        // Determine the effective id for split-point recording this frame.
+        // show_scrollable's full render passes its source_id as split_points_id and
+        // always records. show_with_id stores its source_id in options and rebuilds
+        // only when the available width changes; stable frames reuse cached split points.
+        let record_id: Option<Id> = split_points_id.or_else(|| {
+            options.source_id.and_then(|id| {
+                let sc = scroll_cache(cache, &id);
+                let needs_rebuild =
+                    sc.split_points.is_empty() || (sc.available_size.x - max_width).abs() > 0.5;
+                if needs_rebuild {
+                    sc.split_points.clear();
+                    sc.heading_y_positions.clear();
+                    sc.available_size.x = max_width;
+                    Some(id)
+                } else {
+                    None // existing split points are still valid; skip re-recording
+                }
+            })
+        });
+
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
         let re = ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
@@ -187,8 +208,7 @@ impl CommonMarkViewerInternal {
             let height = ui.text_style_height(&TextStyle::Body);
             ui.set_row_height(height);
 
-            let content_origin_y =
-                self.full_render(cache, options, text, split_points_id, max_width, ui);
+            let content_origin_y = self.full_render(cache, options, text, record_id, max_width, ui);
 
             // deferral to make it consistent no matter whether the target is before or after the link
             *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
@@ -223,7 +243,7 @@ impl CommonMarkViewerInternal {
         cache: &mut CommonMarkCache,
         options: &CommonMarkOptions<'_>,
         text: &str,
-        split_points_id: Option<Id>,
+        record_id: Option<Id>,
         max_width: f32,
         ui: &mut Ui,
     ) -> f32 {
@@ -271,7 +291,7 @@ impl CommonMarkViewerInternal {
             if let (
                 Some(sid),
                 pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading { id: Some(id), .. }),
-            ) = (split_points_id, &e)
+            ) = (record_id, &e)
             {
                 scroll_cache(cache, &sid)
                     .heading_y_positions
@@ -297,7 +317,7 @@ impl CommonMarkViewerInternal {
             let block_end_src = src_span.end;
             self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
 
-            if let Some(source_id) = split_points_id
+            if let Some(source_id) = record_id
                 && is_safe_block_end
             {
                 let scroll_cache = scroll_cache(cache, &source_id);

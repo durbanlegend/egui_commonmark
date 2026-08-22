@@ -48,6 +48,15 @@ pub struct CommonMarkOptions<'f> {
     /// `None`, a theme-derived default is used (see
     /// [`crate::search::default_active_match_bg`]).
     pub search_active_match_bg: Option<egui::Color32>,
+    /// When set via [`show_with_id`](crate::CommonMarkViewer::show_with_id),
+    /// `full_render` records block-boundary positions (split points) under
+    /// this id so that
+    /// [`viewport_start_byte_offset`](CommonMarkCache::viewport_start_byte_offset)
+    /// works and
+    /// [`update_search_matches`](CommonMarkCache::update_search_matches) can
+    /// anchor new searches to the current viewport position.
+    /// Not used by `show_scrollable`, which carries its own source id.
+    pub source_id: Option<egui::Id>,
 }
 
 impl std::fmt::Debug for CommonMarkOptions<'_> {
@@ -72,6 +81,7 @@ impl std::fmt::Debug for CommonMarkOptions<'_> {
             .field("mutable", &self.mutable)
             .field("search_match_bg", &self.search_match_bg)
             .field("search_active_match_bg", &self.search_active_match_bg)
+            .field("source_id", &self.source_id)
             .finish()
     }
 }
@@ -97,6 +107,7 @@ impl Default for CommonMarkOptions<'_> {
             use_viewport_cache: false,
             search_match_bg: None,
             search_active_match_bg: None,
+            source_id: None,
         }
     }
 }
@@ -892,7 +903,14 @@ impl CommonMarkCache {
     /// after that point), mirroring how a normal "find in page" behaves.
     /// Recomputation and the resulting scroll are both cheap (see
     /// `CommonMarkCache::scroll_to_active_search_match`'s docs: this never
-    /// forces a full document re-render), so this shoud stay responsive.
+    /// forces a full document re-render), so this should stay responsive.
+    ///
+    /// Anchoring to the current viewport position requires the viewer to be
+    /// shown via [`show_with_id`](crate::CommonMarkViewer::show_with_id) or
+    /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable) with the
+    /// same `egui_source_id`. When using plain
+    /// [`show`](crate::CommonMarkViewer::show), the search always starts from
+    /// the document top.
     pub fn update_search_matches(&mut self, egui_source_id: &str, content: &str) {
         // Anchor to the byte position of the currently active match so that
         // adding/removing characters from the query stays on the same spot.
