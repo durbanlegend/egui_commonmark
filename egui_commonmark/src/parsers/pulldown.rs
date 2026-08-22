@@ -232,6 +232,12 @@ impl CommonMarkViewerInternal {
                 // match after the user scrolls.
                 let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
                 cache.update_show_viewport(self.search_match_ys_scratch.drain(..), viewport_top_y);
+                // For show_with_id: keep the ScrollableCache's viewport position in sync so
+                // that viewport_start_byte_offset returns the current scroll location.
+                // options.source_id is Some on every frame (including no-rebuild frames).
+                if let Some(id) = options.source_id {
+                    scroll_cache(cache, &id).last_viewport_top_y = viewport_top_y;
+                }
             }
         });
 

@@ -65,6 +65,7 @@ at your option.
 
 struct App {
     cache: CommonMarkCache,
+    egui_source_id: String,
 }
 
 impl App {}
@@ -78,7 +79,8 @@ impl eframe::App for App {
                 ui.label("Search:");
                 let response = ui.text_edit_singleline(&mut self.cache.search_query);
                 if response.changed() {
-                    self.cache.update_search_matches("search_example", MARKDOWN);
+                    self.cache
+                        .update_search_matches(&self.egui_source_id, MARKDOWN);
                 }
                 // Checked unconditionally (not gated on the text edit still
                 // having focus): a single-line TextEdit surrenders focus the
@@ -131,7 +133,7 @@ impl eframe::App for App {
                     // Optionally override default search match colors
                     .search_active_match_color(active_bg)
                     .search_match_color(match_bg)
-                    .show_with_id("search_example", ui, &mut self.cache, MARKDOWN);
+                    .show_with_id(&self.egui_source_id, ui, &mut self.cache, MARKDOWN);
             });
 
             // Sync the active match to the current viewport so that Next/Previous advance
@@ -160,6 +162,7 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
+                egui_source_id: String::from("search_example"),
             }))
         }),
     )
