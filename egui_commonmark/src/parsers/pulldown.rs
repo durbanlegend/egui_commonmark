@@ -367,8 +367,12 @@ impl CommonMarkViewerInternal {
         let scroll_id = source_id.with("_scroll_area");
 
         if !options.use_viewport_cache {
-            // Simple path: render the full document every frame; egui clips
-            // what is off-screen. Clears any stale cache from a previous run.
+            // Full-document render every frame; egui clips what is off-screen.
+            // Split points are rebuilt on every frame (the full render already
+            // pays the cost) so that viewport_start_byte_offset works and
+            // update_search_matches can anchor fresh searches to the viewport.
+            // Clearing first ensures the split_point_exists check in full_render
+            // is always false, so all blocks are recorded cleanly.
             {
                 let sc = scroll_cache(cache, &source_id);
                 sc.page_size = None;
@@ -379,8 +383,19 @@ impl CommonMarkViewerInternal {
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
+                    // Capture viewport top before content is placed; clip_rect
+                    // already reflects the current scroll position.
+                    let viewport_top_y = ui.clip_rect().min.y - ui.next_widget_position().y;
                     apply_pending_scroll_delta(cache, ui);
-                    self.show(ui, cache, options, text, None);
+                    // Pass source_id to trigger split-point recording.
+                    self.show(ui, cache, options, text, Some(source_id));
+                    let sc = scroll_cache(cache, &source_id);
+                    // show() sets page_size as a side-effect of receiving
+                    // Some(source_id); clear it immediately so the next frame
+                    // still takes this full-render path, not the viewport-slice one.
+                    sc.page_size = None;
+                    // Keep last_viewport_top_y in sync for viewport_start_byte_offset.
+                    sc.last_viewport_top_y = viewport_top_y;
                 });
             return;
         }
