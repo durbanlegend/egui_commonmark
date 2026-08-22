@@ -187,107 +187,8 @@ impl CommonMarkViewerInternal {
             let height = ui.text_style_height(&TextStyle::Body);
             ui.set_row_height(height);
 
-            let mut events = pulldown_cmark::Parser::new_ext(
-                text,
-                parser_options_extras(options.math_fn.is_some(), options.enable_scroll_to_heading),
-            )
-            .into_offset_iter()
-            .enumerate()
-            .peekable();
-
-            // Screen-space y of the content origin. Subtracting this from any
-            // cursor position gives virtual (content-relative) y comparable to
-            // viewport.min/max.y from show_viewport.
-            let content_origin_y = ui.next_widget_position().y;
-            self.content_origin_y = content_origin_y;
-
-            // Cursor at the visual top of the current block, captured at
-            // Start(Block) so that vstart reflects the block top, not its bottom.
-            let mut block_start_position: Option<Pos2> = None;
-            // Source byte offset paired with block_start_position, so split
-            // points can also record each block's source span (used to
-            // locate search matches without a fresh full render).
-            let mut block_start_src: Option<usize> = None;
-
-            while let Some((index, (e, src_span))) = events.next() {
-                let start_position = ui.next_widget_position();
-
-                let is_safe_block_start = !self.list.is_inside_a_list()
-                    && matches!(
-                        e,
-                        pulldown_cmark::Event::Start(
-                            pulldown_cmark::Tag::Paragraph
-                                | pulldown_cmark::Tag::Heading { .. }
-                                | pulldown_cmark::Tag::CodeBlock(_)
-                        )
-                    );
-                if is_safe_block_start {
-                    block_start_position = Some(start_position);
-                    block_start_src = Some(src_span.start);
-                }
-
-                // Record virtual y for each named heading so the viewport path
-                // can jump to headings that are outside the rendered slice.
-                if let (
-                    Some(sid),
-                    pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading {
-                        id: Some(id), ..
-                    }),
-                ) = (split_points_id, &e)
-                {
-                    scroll_cache(cache, &sid)
-                        .heading_y_positions
-                        .insert(id.to_string(), ui.cursor().min.y - content_origin_y);
-                }
-
-                // Only record split points at clean, top-level block boundaries
-                // where the renderer has no pending state and can restart safely.
-                let is_safe_block_end = !self.list.is_inside_a_list()
-                    && matches!(
-                        e,
-                        pulldown_cmark::Event::End(
-                            pulldown_cmark::TagEnd::Paragraph
-                                | pulldown_cmark::TagEnd::Heading { .. }
-                                | pulldown_cmark::TagEnd::CodeBlock
-                        )
-                    );
-
-                if events.peek().is_none() {
-                    self.line.should_end_newline_forced = false;
-                }
-
-                let block_end_src = src_span.end;
-                self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
-
-                if let Some(source_id) = split_points_id
-                    && is_safe_block_end
-                {
-                    let scroll_cache = scroll_cache(cache, &source_id);
-                    let end_position = ui.next_widget_position();
-
-                    let split_point_exists = scroll_cache
-                        .split_points
-                        .iter()
-                        .any(|(i, _, _, _)| *i == index);
-
-                    if !split_point_exists {
-                        // Use block_start_position (Start event) not start_position
-                        // (cursor just before End) so that vstart is the block top.
-                        let raw_vstart = block_start_position.take().unwrap_or(start_position);
-                        let vstart = egui::pos2(raw_vstart.x, raw_vstart.y - content_origin_y);
-                        let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
-                        let block_src_span =
-                            block_start_src.take().unwrap_or(block_end_src)..block_end_src;
-                        scroll_cache
-                            .split_points
-                            .push((index, vstart, vend, block_src_span));
-                    }
-                }
-
-                if index == 0 {
-                    self.line.should_not_start_newline_forced = false;
-                }
-            }
+            let content_origin_y =
+                self.full_render(cache, options, text, split_points_id, max_width, ui);
 
             // deferral to make it consistent no matter whether the target is before or after the link
             *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
@@ -315,6 +216,117 @@ impl CommonMarkViewerInternal {
         });
 
         (re, std::mem::take(&mut self.checkbox_events))
+    }
+
+    fn full_render(
+        &mut self,
+        cache: &mut CommonMarkCache,
+        options: &CommonMarkOptions<'_>,
+        text: &str,
+        split_points_id: Option<Id>,
+        max_width: f32,
+        ui: &mut Ui,
+    ) -> f32 {
+        let mut events = pulldown_cmark::Parser::new_ext(
+            text,
+            parser_options_extras(options.math_fn.is_some(), options.enable_scroll_to_heading),
+        )
+        .into_offset_iter()
+        .enumerate()
+        .peekable();
+
+        // Screen-space y of the content origin. Subtracting this from any
+        // cursor position gives virtual (content-relative) y comparable to
+        // viewport.min/max.y from show_viewport.
+        let content_origin_y = ui.next_widget_position().y;
+        self.content_origin_y = content_origin_y;
+
+        // Cursor at the visual top of the current block, captured at
+        // Start(Block) so that vstart reflects the block top, not its bottom.
+        let mut block_start_position: Option<Pos2> = None;
+        // Source byte offset paired with block_start_position, so split
+        // points can also record each block's source span (used to
+        // locate search matches without a fresh full render).
+        let mut block_start_src: Option<usize> = None;
+
+        while let Some((index, (e, src_span))) = events.next() {
+            let start_position = ui.next_widget_position();
+
+            let is_safe_block_start = !self.list.is_inside_a_list()
+                && matches!(
+                    e,
+                    pulldown_cmark::Event::Start(
+                        pulldown_cmark::Tag::Paragraph
+                            | pulldown_cmark::Tag::Heading { .. }
+                            | pulldown_cmark::Tag::CodeBlock(_)
+                    )
+                );
+            if is_safe_block_start {
+                block_start_position = Some(start_position);
+                block_start_src = Some(src_span.start);
+            }
+
+            // Record virtual y for each named heading so the viewport path
+            // can jump to headings that are outside the rendered slice.
+            if let (
+                Some(sid),
+                pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading { id: Some(id), .. }),
+            ) = (split_points_id, &e)
+            {
+                scroll_cache(cache, &sid)
+                    .heading_y_positions
+                    .insert(id.to_string(), ui.cursor().min.y - content_origin_y);
+            }
+
+            // Only record split points at clean, top-level block boundaries
+            // where the renderer has no pending state and can restart safely.
+            let is_safe_block_end = !self.list.is_inside_a_list()
+                && matches!(
+                    e,
+                    pulldown_cmark::Event::End(
+                        pulldown_cmark::TagEnd::Paragraph
+                            | pulldown_cmark::TagEnd::Heading { .. }
+                            | pulldown_cmark::TagEnd::CodeBlock
+                    )
+                );
+
+            if events.peek().is_none() {
+                self.line.should_end_newline_forced = false;
+            }
+
+            let block_end_src = src_span.end;
+            self.process_event(ui, &mut events, e, src_span, cache, options, max_width);
+
+            if let Some(source_id) = split_points_id
+                && is_safe_block_end
+            {
+                let scroll_cache = scroll_cache(cache, &source_id);
+                let end_position = ui.next_widget_position();
+
+                let split_point_exists = scroll_cache
+                    .split_points
+                    .iter()
+                    .any(|(i, _, _, _)| *i == index);
+
+                if !split_point_exists {
+                    // Use block_start_position (Start event) not start_position
+                    // (cursor just before End) so that vstart is the block top.
+                    let raw_vstart = block_start_position.take().unwrap_or(start_position);
+                    let vstart = egui::pos2(raw_vstart.x, raw_vstart.y - content_origin_y);
+                    let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
+                    let block_src_span =
+                        block_start_src.take().unwrap_or(block_end_src)..block_end_src;
+                    scroll_cache
+                        .split_points
+                        .push((index, vstart, vend, block_src_span));
+                }
+            }
+
+            if index == 0 {
+                self.line.should_not_start_newline_forced = false;
+            }
+        }
+        content_origin_y
     }
 
     pub(crate) fn show_scrollable(
@@ -347,6 +359,7 @@ impl CommonMarkViewerInternal {
             return;
         }
 
+        // If the scroll cache is invalidated, force a full render.
         let Some(page_size) = scroll_cache(cache, &source_id).page_size else {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)

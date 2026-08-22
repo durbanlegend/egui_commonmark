@@ -897,7 +897,7 @@ impl CommonMarkCache {
         // Anchor to the byte position of the currently active match so that
         // adding/removing characters from the query stays on the same spot.
         // Fall back to the viewport position for a fresh (no active match)
-        // search.  Using viewport_start here on a query change would jump
+        // search. Using viewport_start here on a query change would jump
         // backwards whenever the viewport centre is a couple of sections
         // before the active match (i.e. the match is centred on screen).
         let anchor = self
