@@ -368,17 +368,21 @@ impl CommonMarkViewerInternal {
 
         if !options.use_viewport_cache {
             // Full-document render every frame; egui clips what is off-screen.
-            // Split points are rebuilt on every frame (the full render already
-            // pays the cost) so that viewport_start_byte_offset works and
-            // update_search_matches can anchor fresh searches to the viewport.
-            // Clearing first ensures the split_point_exists check in full_render
-            // is always false, so all blocks are recorded cleanly.
-            {
+            // Split points are maintained for viewport_start_byte_offset (search
+            // anchoring), rebuilt only on width change — matching egui's own
+            // galley-cache invalidation and the show_with_id path.
+            let needs_rebuild = {
                 let sc = scroll_cache(cache, &source_id);
                 sc.page_size = None;
-                sc.split_points.clear();
-                sc.heading_y_positions.clear();
-            }
+                sc.heading_y_positions.clear(); // not used in this path
+                let rebuild = sc.split_points.is_empty()
+                    || (sc.available_size.x - available_size.x).abs() > 0.5;
+                if rebuild {
+                    sc.split_points.clear();
+                    sc.available_size.x = available_size.x;
+                }
+                rebuild
+            };
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
@@ -387,13 +391,15 @@ impl CommonMarkViewerInternal {
                     // already reflects the current scroll position.
                     let viewport_top_y = ui.clip_rect().min.y - ui.next_widget_position().y;
                     apply_pending_scroll_delta(cache, ui);
-                    // Pass source_id to trigger split-point recording.
-                    self.show(ui, cache, options, text, Some(source_id));
+                    let sid = if needs_rebuild { Some(source_id) } else { None };
+                    self.show(ui, cache, options, text, sid);
                     let sc = scroll_cache(cache, &source_id);
-                    // show() sets page_size as a side-effect of receiving
-                    // Some(source_id); clear it immediately so the next frame
-                    // still takes this full-render path, not the viewport-slice one.
-                    sc.page_size = None;
+                    if needs_rebuild {
+                        // show() sets page_size as a side-effect of receiving
+                        // Some(source_id); clear it so the next frame still
+                        // takes this full-render path, not the viewport-slice one.
+                        sc.page_size = None;
+                    }
                     // Keep last_viewport_top_y in sync for viewport_start_byte_offset.
                     sc.last_viewport_top_y = viewport_top_y;
                 });
