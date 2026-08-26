@@ -488,19 +488,29 @@ impl CommonMarkViewerInternal {
                 if let Some(y) = pending_match_scroll_y
                     && (y < viewport.min.y || y > viewport.max.y)
                 {
-                    // The match's approximate block isn't in view yet. Blind
-                    // scroll toward it; once the viewport settles there
-                    // (usually within a frame or two), the per-widget code
-                    // below will find the exact match in the now-visible
-                    // slice and refine the scroll precisely (see
-                    // `want_scroll_to_active_match` handling). If it's
-                    // already in view, skip this so we don't fight with that
-                    // precise scroll.
+                    // The match's approximate block isn't in view yet.
+                    // Scroll to its approximate position immediately (no
+                    // animation) and request a discard so this pass is never
+                    // shown to the user. In pass 2 the scroll area begins with
+                    // the offset already committed, so the viewport lands on
+                    // the target; the per-widget code below then finds the
+                    // exact match and refines the scroll precisely.
+                    //
+                    // Using ScrollAnimation::none() is essential: the
+                    // animated default takes 0.1–0.3 s, but consecutive
+                    // passes within the same run_dyn loop share nearly the
+                    // same timestamp, so the animation would not progress and
+                    // pass 2's viewport would still be at the old position.
                     let r = egui::Rect::from_min_size(
                         egui::pos2(0.0, ui.next_widget_position().y + y),
                         egui::Vec2::ZERO,
                     );
-                    ui.scroll_to_rect(r, Some(egui::Align::Center));
+                    ui.scroll_to_rect_animation(
+                        r,
+                        Some(egui::Align::Center),
+                        egui::style::ScrollAnimation::none(),
+                    );
+                    ui.ctx().request_discard("scroll to active search match");
                 }
                 if pending_delta != egui::Vec2::ZERO {
                     ui.scroll_with_delta(pending_delta);
@@ -593,27 +603,37 @@ impl CommonMarkViewerInternal {
                         // the cursor mid-row, misaligning the first visible block.
                         ui.allocate_space(egui::vec2(max_width, skip_height));
 
-                        while let Some((i, (e, src_span))) = events.next() {
-                            if events.peek().is_none() {
-                                self.line.should_end_newline_forced = false;
+                        // If this pass will be discarded (blind scroll toward an
+                        // off-screen search match), skip expensive widget rendering
+                        // entirely. The space allocation above is still needed so
+                        // that egui has the correct total height for scroll
+                        // calculations. `want_scroll_to_active_match` stays true,
+                        // so `retry_scroll_to_active_match` below re-arms the flag
+                        // for pass 2, which renders normally at the new offset.
+                        if !ui.ctx().will_discard() {
+                            while let Some((i, (e, src_span))) = events.next() {
+                                if events.peek().is_none() {
+                                    self.line.should_end_newline_forced = false;
+                                }
+                                self.process_event(
+                                    ui,
+                                    &mut events,
+                                    e,
+                                    src_span,
+                                    cache,
+                                    options,
+                                    max_width,
+                                );
+                                if i == 0 {
+                                    self.line.should_not_start_newline_forced = false;
+                                }
                             }
-                            self.process_event(
-                                ui,
-                                &mut events,
-                                e,
-                                src_span,
-                                cache,
-                                options,
-                                max_width,
-                            );
-                            if i == 0 {
-                                self.line.should_not_start_newline_forced = false;
-                            }
-                        }
 
-                        // Mirror show()'s deferred flush so that clicking a #fragment
-                        // link while in the viewport path triggers a scroll next frame.
-                        *cache.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+                            // Mirror show()'s deferred flush so that clicking a #fragment
+                            // link while in the viewport path triggers a scroll next frame.
+                            *cache.scroll_to_id_target_mut() =
+                                self.deferred_scroll_to_heading.take();
+                        }
                     });
                 });
             });
