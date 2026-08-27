@@ -1,4 +1,5 @@
 use crate::alerts::AlertBundle;
+use bitflags::bitflags;
 use egui::{RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -585,6 +586,15 @@ fn default_theme(ui: &Ui) -> &str {
     }
 }
 
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct SearchOptions: u8 {
+        const CASE_SENSITIVE = 1 << 0;
+        const WHOLE_WORD     = 1 << 1;
+        const REGEX          = 1 << 2;
+    }
+}
+
 /// A cache used for storing content such as images.
 #[derive(Debug)]
 pub struct CommonMarkCache {
@@ -608,6 +618,10 @@ pub struct CommonMarkCache {
 
     /// The search query text
     pub search_query: String,
+    /// The search options
+    pub search_options: SearchOptions,
+    /// Any regex message, e.g. when an escape character is being typed
+    pub search_regex_error: Option<String>,
     /// Byte ranges (into the source text passed to the viewer) that should
     /// be highlighted as search matches.
     search_ranges: Vec<Range<usize>>,
@@ -653,6 +667,8 @@ impl Default for CommonMarkCache {
             has_installed_loaders: false,
             pending_scroll_delta: egui::Vec2::ZERO,
             search_query: String::new(),
+            search_options: SearchOptions::empty(),
+            search_regex_error: None,
             search_ranges: Vec::new(),
             active_search_range: None,
             active_match: None,
@@ -926,31 +942,62 @@ impl CommonMarkCache {
             .unwrap_or(0);
 
         self.search_ranges.clear();
-        if !self.search_query.is_empty() {
-            let query = self.search_query.to_lowercase();
-            // Mirror the options CommonMarkViewer itself parses with,
-            // including heading attributes since `enable_scroll_to_heading`
-            // is set below (otherwise `{#section-500}` would remain in the
-            // heading's Text event and get matched too).
-            let options = pulldown_cmark::Options::ENABLE_STRIKETHROUGH
-                | pulldown_cmark::Options::ENABLE_TASKLISTS
-                | pulldown_cmark::Options::ENABLE_TABLES
-                | pulldown_cmark::Options::ENABLE_FOOTNOTES
-                | pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES;
-            let parser = pulldown_cmark::Parser::new_ext(content, options).into_offset_iter();
-            for (event, range) in parser {
-                let (pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text)) = event
-                else {
-                    continue;
-                };
-                let haystack = text.to_lowercase();
-                let mut start = 0;
-                while let Some(pos) = haystack[start..].find(&query) {
-                    let match_start = range.start + start + pos;
-                    let match_end = match_start + query.len();
-                    self.search_ranges.push(match_start..match_end);
-                    start += pos + query.len();
-                }
+
+        let query = &self.search_query;
+
+        if query.is_empty() {
+            return;
+        }
+
+        let options = self.search_options;
+
+        let mut pattern = if options.contains(SearchOptions::REGEX) {
+            query.clone()
+        } else {
+            regex::escape(&query)
+        };
+
+        if options.contains(SearchOptions::WHOLE_WORD) {
+            pattern = format!(r"\b(?:{pattern})\b");
+        }
+
+        let regex = match regex::RegexBuilder::new(&pattern)
+            .case_insensitive(!options.contains(SearchOptions::CASE_SENSITIVE))
+            .build()
+        {
+            Ok(regex) => {
+                self.search_regex_error = None;
+                regex
+            }
+            Err(err) => {
+                self.search_regex_error = Some(err.to_string());
+                return;
+            }
+        };
+
+        // Mirror the options CommonMarkViewer itself parses with,
+        // including heading attributes since `enable_scroll_to_heading`
+        // is set below (otherwise `{#section-500}` would remain in the
+        // heading's Text event and get matched too).
+        let options = pulldown_cmark::Options::ENABLE_STRIKETHROUGH
+            | pulldown_cmark::Options::ENABLE_TASKLISTS
+            | pulldown_cmark::Options::ENABLE_TABLES
+            | pulldown_cmark::Options::ENABLE_FOOTNOTES
+            | pulldown_cmark::Options::ENABLE_HEADING_ATTRIBUTES;
+
+        let parser = pulldown_cmark::Parser::new_ext(content, options).into_offset_iter();
+
+        for (event, range) in parser {
+            let (pulldown_cmark::Event::Text(text) | pulldown_cmark::Event::Code(text)) = event
+            else {
+                continue;
+            };
+
+            for matched in regex.find_iter(&text) {
+                let match_start = range.start + matched.start();
+                let match_end = range.start + matched.end();
+
+                self.search_ranges.push(match_start..match_end);
             }
         }
 
