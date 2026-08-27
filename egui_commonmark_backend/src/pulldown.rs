@@ -25,6 +25,10 @@ pub struct ScrollableCache {
     /// that starts from the current scroll position) via
     /// [`Self::byte_offset_for_virtual_y`].
     pub last_viewport_top_y: f32,
+    /// Height of the viewport on the most recent frame, in the same virtual
+    /// coordinate space as `last_viewport_top_y`. Together they define the
+    /// visible interval `[last_viewport_top_y, last_viewport_top_y + last_viewport_height)`.
+    pub last_viewport_height: f32,
 }
 
 impl ScrollableCache {

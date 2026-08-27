@@ -231,7 +231,12 @@ impl CommonMarkViewerInternal {
                 // and the current viewport top so callers can sync the active
                 // match after the user scrolls.
                 let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
-                cache.update_show_viewport(self.search_match_ys_scratch.drain(..), viewport_top_y);
+                let viewport_height = ui.clip_rect().height();
+                cache.update_show_viewport(
+                    self.search_match_ys_scratch.drain(..),
+                    viewport_top_y,
+                    viewport_height,
+                );
                 // For show_with_id: keep the ScrollableCache's viewport position in sync so
                 // that viewport_start_byte_offset returns the current scroll location.
                 // options.source_id is Some on every frame (including no-rebuild frames).
@@ -454,16 +459,35 @@ impl CommonMarkViewerInternal {
         };
         let pending_delta = std::mem::replace(&mut cache.pending_scroll_delta, egui::Vec2::ZERO);
 
-        // Approximate virtual y of the active match, from split points
-        // collected during the last full render (see `ScrollableCache::
-        // virtual_y_for_byte_offset`). `None` only when no full render has
-        // ever populated split points yet, which resolves itself the moment
-        // one does (e.g. on first show, or after a resize/content change).
+        // Virtual y of the active match used to decide whether a blind
+        // scroll is needed before the slice renders.
+        //
+        // Prefer the precise per-match Y recorded during the *previous*
+        // frame's render (search_match_virtual_ys). That value is exact for
+        // any match that was on screen last frame — including matches deep
+        // inside tall code blocks, where virtual_y_for_byte_offset only
+        // returns the block-top Y. Using the block-top Y for such a match
+        // triggers a spurious blind scroll to the top of the block followed
+        // by a second scroll to the match, producing the "scrolls to the
+        // previous page then back" animation the user sees.
+        //
+        // Fall back to the block-level split-point approximation only when
+        // the match was not rendered last frame (Y stored as 0.0).
         let pending_match_scroll_y: Option<f32> = if self.want_scroll_to_active_match {
-            cache
-                .active_search_range()
-                .map(|r| r.start)
-                .and_then(|start| scroll_cache(cache, &source_id).virtual_y_for_byte_offset(start))
+            let precise_y = cache
+                .active_match()
+                .and_then(|i| cache.search_match_virtual_ys().get(i).copied())
+                .filter(|&y| y > 0.0);
+            if precise_y.is_some() {
+                precise_y
+            } else {
+                cache
+                    .active_search_range()
+                    .map(|r| r.start)
+                    .and_then(|start| {
+                        scroll_cache(cache, &source_id).virtual_y_for_byte_offset(start)
+                    })
+            }
         } else {
             None
         };
@@ -531,6 +555,7 @@ impl CommonMarkViewerInternal {
                     let (skip_height, skip_count, take_count) = {
                         let scroll_cache = scroll_cache(cache, &source_id);
                         scroll_cache.last_viewport_top_y = viewport.min.y;
+                        scroll_cache.last_viewport_height = viewport_height;
                         let preceding_split = scroll_cache
                             .split_points
                             .iter()
@@ -561,6 +586,15 @@ impl CommonMarkViewerInternal {
                         };
                         (skip_height, skip_count, take_count)
                     }; // scroll_cache borrow released here
+
+                    // Set content_origin_y to the screen Y of virtual-Y=0 (the
+                    // document top) for this frame. This makes match Ys recorded
+                    // by event_text comparable with viewport.min.y (the virtual
+                    // scroll offset). Matches in the rendered slice get their
+                    // exact pixel Y; those outside get the default 0.0 and are
+                    // treated as not-in-viewport by sync_scrollable_active_match.
+                    self.content_origin_y = ui.clip_rect().min.y - viewport.min.y;
+                    self.search_match_ys_scratch.clear();
 
                     let mut events = events
                         .into_iter()
@@ -633,6 +667,16 @@ impl CommonMarkViewerInternal {
                             // link while in the viewport path triggers a scroll next frame.
                             *cache.scroll_to_id_target_mut() =
                                 self.deferred_scroll_to_heading.take();
+
+                            // Flush the per-match virtual-Y positions collected by
+                            // event_text into the cache, exactly as the non-scrollable
+                            // show() path does. Skipped on discard frames (blind scroll
+                            // toward an off-screen match) because no widgets rendered.
+                            cache.update_show_viewport(
+                                self.search_match_ys_scratch.drain(..),
+                                viewport.min.y,
+                                viewport_height,
+                            );
                         }
                     });
                 });
@@ -1219,16 +1263,18 @@ impl CommonMarkViewerInternal {
             }
             pulldown_cmark::TagEnd::Link => {
                 if let Some(link) = self.link.take() {
-                    let scrolled = link.end(
+                    let (scrolled, match_ys) = link.end(
                         ui,
                         cache,
                         options,
                         &mut self.deferred_scroll_to_heading,
                         self.want_scroll_to_active_match,
+                        self.content_origin_y,
                     );
                     if scrolled {
                         self.want_scroll_to_active_match = false;
                     }
+                    self.search_match_ys_scratch.extend(match_ys);
                 }
             }
             pulldown_cmark::TagEnd::Image => {
@@ -1262,16 +1308,18 @@ impl CommonMarkViewerInternal {
         max_width: f32,
     ) {
         if let Some(block) = self.code_block.take() {
-            let scrolled = block.end(
+            let (scrolled, match_ys) = block.end(
                 ui,
                 cache,
                 options,
                 max_width,
                 self.want_scroll_to_active_match,
+                self.content_origin_y,
             );
             if scrolled {
                 self.want_scroll_to_active_match = false;
             }
+            self.search_match_ys_scratch.extend(match_ys);
             self.line.try_insert_end(ui);
         }
     }

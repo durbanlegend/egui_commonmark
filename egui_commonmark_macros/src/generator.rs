@@ -842,13 +842,13 @@ impl CommonMarkViewerInternal {
             // Compile-time embedded markdown has no live search-match state to
             // track, so `chunks` is left empty and scrolling is never requested.
             stream.extend(if let Some(lang) = block.lang {
-                quote!(egui_commonmark_backend::CodeBlock {
+                quote!(let _ = egui_commonmark_backend::CodeBlock {
                     lang: Some(#lang.to_owned()), content: #content.to_owned(), chunks: Vec::new()}
-                    .end(ui, #cache, &options, max_width, false);)
+                    .end(ui, #cache, &options, max_width, false, 0.0_f32);)
             } else {
-                quote!(egui_commonmark_backend::CodeBlock {
+                quote!(let _ = egui_commonmark_backend::CodeBlock {
                     lang: None, content: #content.to_owned(), chunks: Vec::new()}
-                    .end(ui, #cache, &options, max_width, false);)
+                    .end(ui, #cache, &options, max_width, false, 0.0_f32);)
             });
 
             stream.extend(self.line.try_insert_end());

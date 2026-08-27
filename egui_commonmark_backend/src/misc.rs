@@ -259,6 +259,16 @@ impl Link {
     /// currently active search match falls inside this link's text, the view
     /// is scrolled (centering the link) and `true` is returned so the caller
     /// knows the request has been fulfilled.
+    /// `content_origin_y` is the screen-space Y of the document top for the
+    /// current render pass (as recorded by `CommonMarkViewerInternal`). It is
+    /// subtracted from the link widget's screen Y to produce the virtual
+    /// (scroll-independent) Y stored in `search_match_virtual_ys`.
+    ///
+    /// Returns `(scrolled, match_ys)` where `match_ys` is a list of
+    /// `(global_match_index, virtual_y)` pairs for every search match that
+    /// falls inside this link's text. The caller should extend
+    /// `search_match_ys_scratch` with these so that `sync_active_match` can
+    /// correctly identify which visual row link matches are on.
     pub fn end(
         self,
         ui: &mut Ui,
@@ -266,7 +276,8 @@ impl Link {
         options: &CommonMarkOptions,
         scroll_to_heading: &mut Option<String>,
         want_scroll_to_active_match: bool,
-    ) -> bool {
+        content_origin_y: f32,
+    ) -> (bool, Vec<(usize, f32)>) {
         let Self {
             destination,
             text,
@@ -278,7 +289,7 @@ impl Link {
         // a wrapping layout resets cursor.min.x to 0, superimposing subsequent elements on
         // the image that was just drawn. Nothing to render, so return early.
         if text.is_empty() {
-            return false;
+            return (false, vec![]);
         }
 
         let ranges = cache.search_ranges();
@@ -330,12 +341,34 @@ impl Link {
             ui.hyperlink_to(layout_job, destination)
         };
 
-        if has_active_match && want_scroll_to_active_match {
+        let scrolled = if has_active_match && want_scroll_to_active_match {
             ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
             true
         } else {
             false
-        }
+        };
+
+        // Record the virtual Y for every search match inside this link.
+        // Link text is accumulated and rendered as a single widget, so it
+        // never goes through the `event_text` else-branch that normally
+        // fills `search_match_ys_scratch`. Use the widget's top-left Y
+        // (same row as the surrounding inline text) for all of them.
+        let link_virtual_y = response.rect.min.y - content_origin_y;
+        let link_src_start = chunks
+            .iter()
+            .map(|(_, s)| s.start)
+            .min()
+            .unwrap_or(usize::MAX);
+        let link_src_end = chunks.iter().map(|(_, s)| s.end).max().unwrap_or(0);
+        let match_ys: Vec<(usize, f32)> = cache
+            .search_ranges()
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.start < link_src_end && r.end > link_src_start)
+            .map(|(i, _)| (i, link_virtual_y))
+            .collect();
+
+        (scrolled, match_ys)
     }
 }
 
@@ -417,6 +450,11 @@ impl CodeBlock {
     /// the currently active search match falls inside this block, the view
     /// is scrolled (centering the match) and `true` is returned so the
     /// caller knows the request has been fulfilled.
+    ///
+    /// `content_origin_y` is the screen-space Y of the document top (see
+    /// [`Link::end`] for details). Returns `(scrolled, match_ys)` where
+    /// `match_ys` lists `(global_match_index, virtual_y)` for every search
+    /// match in this block so the caller can extend `search_match_ys_scratch`.
     pub fn end(
         &self,
         ui: &mut Ui,
@@ -424,7 +462,8 @@ impl CodeBlock {
         options: &CommonMarkOptions,
         max_width: f32,
         want_scroll_to_active_match: bool,
-    ) -> bool {
+        content_origin_y: f32,
+    ) -> (bool, Vec<(usize, f32)>) {
         let intervals = crate::search::chunked_search_intervals(
             &self.chunks,
             cache.search_ranges(),
@@ -436,39 +475,78 @@ impl CodeBlock {
             .map(|(range, _)| range.clone());
         let did_scroll = scroll_to_active_match.is_some();
 
-        ui.scope(|ui| {
-            Self::pre_syntax_highlighting(cache, options, ui);
+        let (galley_pos, galley) = ui
+            .scope(|ui| {
+                Self::pre_syntax_highlighting(cache, options, ui);
 
-            let mut layout = |ui: &Ui, string: &dyn TextBuffer, wrap_width: f32| {
-                let mut job = if let Some(lang) = &self.lang {
-                    self.syntax_highlighting(cache, options, lang, ui, string.as_str())
-                } else {
-                    plain_highlighting(ui, string.as_str())
+                let mut layout = |ui: &Ui, string: &dyn TextBuffer, wrap_width: f32| {
+                    let mut job = if let Some(lang) = &self.lang {
+                        self.syntax_highlighting(cache, options, lang, ui, string.as_str())
+                    } else {
+                        plain_highlighting(ui, string.as_str())
+                    };
+
+                    if !intervals.is_empty() {
+                        crate::search::apply_search_highlights(
+                            &mut job,
+                            &intervals,
+                            options.search_match_bg(ui),
+                            options.search_active_match_bg(ui),
+                        );
+                    }
+
+                    job.wrap.max_width = wrap_width;
+                    ui.fonts_mut(|f| f.layout_job(job))
                 };
 
-                if !intervals.is_empty() {
-                    crate::search::apply_search_highlights(
-                        &mut job,
-                        &intervals,
-                        options.search_match_bg(ui),
-                        options.search_active_match_bg(ui),
-                    );
-                }
+                crate::elements::code_block(
+                    ui,
+                    max_width,
+                    &self.content,
+                    &mut layout,
+                    scroll_to_active_match,
+                )
+            })
+            .inner;
 
-                job.wrap.max_width = wrap_width;
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
+        // Record the exact virtual Y of each search match by querying the
+        // galley that was just rendered. Unlike the old single block-top Y
+        // approach, this handles code blocks taller than one viewport: a
+        // match partway down a large block gets the Y of its actual line,
+        // not the block top, so the in-viewport check stays correct while
+        // the user scrolls through the block.
+        let match_ys: Vec<(usize, f32)> = self
+            .chunks
+            .iter()
+            .flat_map(|(local_chunk, src_chunk)| {
+                let chunk_text_len = local_chunk.end.saturating_sub(local_chunk.start);
+                cache
+                    .search_ranges()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.start < src_chunk.end && r.end > src_chunk.start)
+                    .filter_map(|(global_idx, r)| {
+                        // Translate source byte range to local range within `content`.
+                        let local_start =
+                            r.start.saturating_sub(src_chunk.start).min(chunk_text_len)
+                                + local_chunk.start;
+                        let local_end = r.end.saturating_sub(src_chunk.start).min(chunk_text_len)
+                            + local_chunk.start;
+                        if local_start >= local_end {
+                            return None;
+                        }
+                        let rect = crate::elements::highlight_rect_for_byte_range(
+                            &galley,
+                            galley_pos,
+                            local_start..local_end,
+                        )?;
+                        Some((global_idx, rect.min.y - content_origin_y))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
-            crate::elements::code_block(
-                ui,
-                max_width,
-                &self.content,
-                &mut layout,
-                scroll_to_active_match,
-            );
-        });
-
-        did_scroll
+        (did_scroll, match_ys)
     }
 }
 
@@ -634,6 +712,10 @@ pub struct CommonMarkCache {
     search_match_virtual_ys: Vec<f32>,
     /// The y position of the top of the last viewport, relative to the document
     last_viewport_virtual_top_y: f32,
+    /// The height of the last viewport (clip rect), in the same virtual
+    /// coordinate space as `last_viewport_virtual_top_y`. Together they form
+    /// the interval `[top, top + height)` that defines what is on screen.
+    last_viewport_height: f32,
     /// The byte offset of the last viewport, relative to the document, for
     /// use with `show_scrollable`. Used to detect viewport movement without
     /// relying on input events.
@@ -643,6 +725,13 @@ pub struct CommonMarkCache {
     /// updates from overriding the scroll animation. Cleared immediately
     /// when the user scrolls manually.
     search_scroll_protection: u32,
+    /// Set by [`go_to_match`](Self::go_to_match) to hold `sync_active_match`
+    /// from overriding the explicitly chosen match until the user next
+    /// scrolls. Unlike `search_scroll_protection` (which counts down and
+    /// expires), this stays latched indefinitely so that multiple matches
+    /// on the same visual line don't snap back to the first one once the
+    /// scroll-protection countdown expires.
+    go_to_match_locked: bool,
     /// Set by [`CommonMarkCache::scroll_to_active_search_match`] and cleared
     /// once the render pass that finds and scrolls to the active match runs.
     pending_scroll_to_active_match: bool,
@@ -674,8 +763,10 @@ impl Default for CommonMarkCache {
             active_match: None,
             search_match_virtual_ys: Vec::new(),
             last_viewport_virtual_top_y: 0.0,
+            last_viewport_height: 0.0,
             last_viewport_offset: 0,
             search_scroll_protection: 0,
+            go_to_match_locked: false,
             pending_scroll_to_active_match: false,
             pending_scroll_to_active_match_retries: 0,
         }
@@ -838,9 +929,11 @@ impl CommonMarkCache {
         self.last_viewport_virtual_top_y
     }
 
-    /// Updates the per-match virtual-y positions and the viewport top-y
+    /// Updates the per-match virtual-y positions and the viewport geometry
     /// recorded during a [`show`](crate::CommonMarkViewer::show) call.
     /// `match_ys` is an iterator of `(match_index, virtual_y)` pairs.
+    /// `viewport_height` is the height of the clip rect (same coordinate
+    /// space as `viewport_top_y`).
     ///
     /// Used internally by the renderer; read the results via
     /// [`search_match_virtual_ys`](Self::search_match_virtual_ys) and
@@ -849,6 +942,7 @@ impl CommonMarkCache {
         &mut self,
         match_ys: impl IntoIterator<Item = (usize, f32)>,
         viewport_top_y: f32,
+        viewport_height: f32,
     ) {
         let n = self.search_ranges.len();
         self.search_match_virtual_ys.clear();
@@ -859,6 +953,7 @@ impl CommonMarkCache {
             }
         }
         self.last_viewport_virtual_top_y = viewport_top_y;
+        self.last_viewport_height = viewport_height;
     }
 
     /// The ordinal number of the currently active (focused) search match, if any.
@@ -1048,9 +1143,21 @@ impl CommonMarkCache {
     pub fn sync_active_match(&mut self, user_scrolled: bool) {
         if user_scrolled {
             self.search_scroll_protection = 0;
+            // The user scrolled manually, so it's safe to re-anchor
+            // active_match to the viewport again.
+            self.go_to_match_locked = false;
         }
         if self.search_scroll_protection > 0 {
             self.search_scroll_protection -= 1;
+            return;
+        }
+        // go_to_match explicitly chose a match; don't override it until the
+        // user scrolls. The 30-frame countdown above protects against drift
+        // during the scroll animation, but it can expire while the viewport
+        // is still centred on the same row as the chosen match — causing an
+        // unwanted snap back to the first match on that row. This flag keeps
+        // the lock alive past the countdown.
+        if self.go_to_match_locked {
             return;
         }
         if self.search_ranges.is_empty() || self.search_match_virtual_ys.is_empty() {
@@ -1071,10 +1178,22 @@ impl CommonMarkCache {
             .position(|&y| y >= vt)
             .unwrap_or(len - 1);
         if self.active_match != Some(nearest) {
-            self.active_match = Some(nearest);
-            self.sync_active_search_range();
-            // Do NOT call scroll_to_active_search_match: the viewport is
-            // already where the user put it.
+            // Only move away from the active match if it has actually scrolled
+            // out of the viewport. While it is still on screen the user is
+            // just panning around within the same view, and we should honour
+            // their explicit Next/Prev choice rather than snapping to the
+            // first match visible at the viewport top.
+            let active_y = self
+                .active_match
+                .and_then(|i| self.search_match_virtual_ys.get(i).copied());
+            let in_viewport =
+                active_y.is_some_and(|y| y >= vt && y < vt + self.last_viewport_height);
+            if !in_viewport {
+                self.active_match = Some(nearest);
+                self.sync_active_search_range();
+                // Do NOT call scroll_to_active_search_match: the viewport is
+                // already where the user put it.
+            }
         }
     }
 
@@ -1095,26 +1214,47 @@ impl CommonMarkCache {
             return;
         }
 
+        if user_scrolled {
+            self.search_scroll_protection = 0;
+            self.go_to_match_locked = false;
+        }
+
         let current_offset = self.viewport_start_byte_offset(egui_source_id).unwrap_or(0);
 
-        if !self.search_ranges().is_empty()
+        if !self.search_ranges.is_empty()
             && self.search_scroll_protection == 0
             && current_offset != self.last_viewport_offset
         {
-            let len = self.search_ranges().len();
+            let len = self.search_ranges.len();
             let idx = self
-                .search_ranges()
+                .search_ranges
                 .partition_point(|r| r.start < current_offset);
             let nearest = if idx > 0 {
                 idx - 1
             } else {
                 len.saturating_sub(1)
             };
-            if self.active_match() != Some(nearest) {
-                self.active_match = Some(nearest);
-                self.sync_active_search_range();
-                // Do NOT call scroll_to_active_search_match here: the
-                // viewport is already where the user put it.
+
+            if self.active_match != Some(nearest) {
+                // Only move away from the active match if it has scrolled out
+                // of the viewport. search_match_virtual_ys is now populated
+                // by the viewport-cache slice render (via update_show_viewport)
+                // so we can use the same check as sync_active_match: matches
+                // in the rendered slice have their exact pixel Y; those outside
+                // default to 0.0 and are treated as not-in-viewport.
+                let active_y = self
+                    .active_match
+                    .and_then(|i| self.search_match_virtual_ys.get(i).copied());
+                let vt = self.last_viewport_virtual_top_y;
+                let in_viewport =
+                    active_y.is_some_and(|y| y >= vt && y < vt + self.last_viewport_height);
+
+                if !in_viewport {
+                    self.active_match = Some(nearest);
+                    self.sync_active_search_range();
+                    // Do NOT call scroll_to_active_search_match here: the
+                    // viewport is already where the user put it.
+                }
             }
         }
 
@@ -1150,6 +1290,10 @@ impl CommonMarkCache {
         self.sync_active_search_range();
         self.scroll_to_active_search_match();
         self.search_scroll_protection = 30;
+        // Hold the lock until the user scrolls, so that sync_active_match
+        // cannot revert to the first match on the same visual row once the
+        // 30-frame countdown expires.
+        self.go_to_match_locked = true;
     }
 
     /// Clear the cache for all scrollable elements

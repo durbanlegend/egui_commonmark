@@ -162,8 +162,8 @@ pub fn label_with_search_highlight(
 
 /// The rect (in screen coordinates) spanned by the given byte range within
 /// `galley`'s text, or `None` if the range is empty. Used to scroll the
-/// active search match into view.
-fn highlight_rect_for_byte_range(
+/// active search match into view and to record per-match virtual-Y positions.
+pub fn highlight_rect_for_byte_range(
     galley: &std::sync::Arc<egui::Galley>,
     pos: Pos2,
     local_byte_range: Range<usize>,
@@ -188,13 +188,16 @@ fn highlight_rect_for_byte_range(
 }
 
 /// Enhanced/specialized version of egui's code blocks. This one features copy button and borders
+/// Returns `(galley_pos, galley)` so the caller can compute per-match
+/// virtual-Y positions via [`highlight_rect_for_byte_range`] without a
+/// second layout pass.
 pub fn code_block<'t>(
     ui: &mut Ui,
     max_width: f32,
     text: &str,
     layouter: &'t mut dyn FnMut(&Ui, &dyn TextBuffer, f32) -> std::sync::Arc<egui::Galley>,
     scroll_to_active_match: Option<Range<usize>>,
-) {
+) -> (egui::Pos2, std::sync::Arc<egui::Galley>) {
     let mut text = text.strip_suffix('\n').unwrap_or(text);
 
     // To manually add background color to the code block, we imitate what
@@ -284,6 +287,8 @@ pub fn code_block<'t>(
         };
         ui.copy_text(copy_text);
     }
+
+    (output.galley_pos, output.galley)
 }
 
 // Stripped down version of egui's Checkbox. The only difference is that this

@@ -7,7 +7,7 @@
 //! `cargo r --example search [light|dark]`
 
 use eframe::egui;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer, SearchOptions};
 
 const MARKDOWN: &str = r#"# Search Highlighting
 
@@ -68,20 +68,33 @@ struct App {
     egui_source_id: String,
 }
 
-impl App {}
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.set_min_height(512.0);
 
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
+                let text_color = if self.cache.search_regex_error.is_some() {
+                    ui.visuals().error_fg_color
+                } else {
+                    ui.visuals().text_color()
+                };
+
                 ui.label("Search:");
-                let response = ui.text_edit_singleline(&mut self.cache.search_query);
-                if response.changed() {
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.cache.search_query).text_color(text_color),
+                );
+                if let Some(error) = &self.cache.search_regex_error {
+                    response.clone().on_hover_text(error);
+                }
+
+                let search_options_changed = self.search_options_changed(ui);
+
+                if search_options_changed || response.changed() {
                     self.cache
                         .update_search_matches(&self.egui_source_id, MARKDOWN);
                 }
+
                 // Checked unconditionally (not gated on the text edit still
                 // having focus): a single-line TextEdit surrenders focus the
                 // moment Enter is pressed, so `response.has_focus()` would
@@ -142,6 +155,48 @@ impl eframe::App for App {
             // to the viewport — not just continue an existing one.
             self.cache.sync_active_match(user_scrolled);
         });
+    }
+}
+
+impl App {
+    fn search_options_changed(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut search_options_changed = false;
+
+        let mut search_toggle =
+            |ui: &mut egui::Ui, flag: SearchOptions, label: egui::WidgetText, tooltip: String| {
+                let selected = self.cache.search_options.contains(flag);
+
+                if ui
+                    .selectable_label(selected, label)
+                    .on_hover_text(tooltip)
+                    .clicked()
+                {
+                    self.cache.search_options.toggle(flag);
+                    search_options_changed = true;
+                }
+            };
+
+        search_toggle(
+            ui,
+            SearchOptions::CASE_SENSITIVE,
+            "Aa".into(),
+            "Case sensitive search".to_string(),
+        );
+
+        search_toggle(
+            ui,
+            SearchOptions::WHOLE_WORD,
+            egui::RichText::new("wd").underline().into(),
+            "Whole word search".to_string(),
+        );
+
+        search_toggle(
+            ui,
+            SearchOptions::REGEX,
+            ".*".into(),
+            "Regex search".to_string(),
+        );
+        search_options_changed
     }
 }
 
