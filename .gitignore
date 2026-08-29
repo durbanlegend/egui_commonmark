@@ -1,8 +1,2 @@
 **/target
 egui_commonmark_macros/wip/
-egui_commonmark/examples/search_temp.rs
-Search_Match_Scrolling_Without_Viewport_Cache.md
-*.folded
-*.profraw
-*.DS_Store
-Search_match_viewport_sync_without_cache.md

@@ -61,7 +61,7 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ui, |ui| {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
-            // Handle any keyboard scrolling requests
+            // Handle any keyboard scrolling requests.
             let user_scrolled = self.cache.handle_keyboard_scrolling(ui);
 
             // `show_scrollable` will automatically scroll by any accumulated scroll amount
@@ -72,10 +72,11 @@ impl eframe::App for App {
                 .viewport_cache(self.viewport_cache)
                 .show_scrollable(&self.egui_source_id, ui, &mut self.cache, &self.content);
 
-            // Use the scrollable sync method to sync any search to the current viewport so
-            // that Next/Previous will continue from here instead of from its previous location.
-            // Unlike the regular `sync_active_match` method, this also supports new searches
-            // because it is confined to a range of known split points from the last full render.
+            // Optionally anchor any current search to the current viewport so that Next/Previous will
+            // continue from there instead of from its previous location.
+            // This call does not affect new searches. In `show-scrollable` mode these will always be
+            // anchored to the current viewport because the `egui_source_id` is passed in, whether or not
+            // the relevant sync active match method is called or `viewport_cache` is enabled.
             self.cache.sync_scrollable_active_match(
                 &self.egui_source_id,
                 self.viewport_cache,
