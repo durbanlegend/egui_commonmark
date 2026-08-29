@@ -208,6 +208,7 @@ impl CommonMarkViewerInternal {
             let height = ui.text_style_height(&TextStyle::Body);
             ui.set_row_height(height);
 
+            // Do a full render
             let content_origin_y = self.full_render(cache, options, text, record_id, max_width, ui);
 
             // deferral to make it consistent no matter whether the target is before or after the link
@@ -249,6 +250,7 @@ impl CommonMarkViewerInternal {
         (re, std::mem::take(&mut self.checkbox_events))
     }
 
+    /// Perform a full render of the document.
     fn full_render(
         &mut self,
         cache: &mut CommonMarkCache,
@@ -589,7 +591,7 @@ impl CommonMarkViewerInternal {
 
                     // Set content_origin_y to the screen Y of virtual-Y=0 (the
                     // document top) for this frame. This makes match Ys recorded
-                    // by event_text comparable with viewport.min.y (the virtual
+                    // by `event_text` comparable with viewport.min.y (the virtual
                     // scroll offset). Matches in the rendered slice get their
                     // exact pixel Y; those outside get the default 0.0 and are
                     // treated as not-in-viewport by sync_scrollable_active_match.
@@ -669,7 +671,7 @@ impl CommonMarkViewerInternal {
                                 self.deferred_scroll_to_heading.take();
 
                             // Flush the per-match virtual-Y positions collected by
-                            // event_text into the cache, exactly as the non-scrollable
+                            // `event_text` into the cache, exactly as the non-scrollable
                             // show() path does. Skipped on discard frames (blind scroll
                             // toward an off-screen match) because no widgets rendered.
                             cache.update_show_viewport(

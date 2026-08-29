@@ -88,6 +88,7 @@ impl eframe::App for App {
                     response.clone().on_hover_text(error);
                 }
 
+                // Lay out and test search options
                 let search_options_changed = self.search_options_changed(ui);
 
                 if search_options_changed || response.changed() {
@@ -139,6 +140,8 @@ impl eframe::App for App {
             let active_bg = ui.visuals().selection.bg_fill;
             let match_bg = active_bg.gamma_multiply(0.6);
 
+            // To anchor searches to the scroll position, optionally replace `show` by `show_with_id`
+            // and then call `self.cache.sync_active_match`.
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // Scroll by accumulated scroll amount before rendering
                 self.cache.apply_pending_scroll_delta(ui);
@@ -149,16 +152,19 @@ impl eframe::App for App {
                     .show_with_id(&self.egui_source_id, ui, &mut self.cache, MARKDOWN);
             });
 
-            // Sync the active match to the current viewport so that Next/Previous advance
-            // from the current scroll position. Because show_with_id builds split points on
-            // every layout-width change, update_search_matches can also anchor fresh searches
-            // to the viewport — not just continue an existing one.
+            // Optionally anchor any current or new search to the current viewport so that
+            // Next/Previous will continue from there instead of from its previous location.
+            // New searches are affected only when using regular `CommonMarkViewer::show`:
+            // without this call they will start from the top of the document.
+            // When using `CommonMarkViewer::show_with_id`, new searches will always be
+            // anchored to the current viewport anyway, thanks to the `egui_source_id` argument.
             self.cache.sync_active_match(user_scrolled);
         });
     }
 }
 
 impl App {
+    // Lays out the search option buttons and checks if they've changed from frame to frame.
     fn search_options_changed(&mut self, ui: &mut egui::Ui) -> bool {
         let mut search_options_changed = false;
 

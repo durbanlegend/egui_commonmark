@@ -352,13 +352,6 @@ impl<'f> CommonMarkViewer<'f> {
     /// This function is much more performant than just calling [`show`] inside a [`ScrollArea`],
     /// because it only renders elements that are visible.
     ///
-    /// # Caveat
-    ///
-    /// This assumes that the markdown is static. If it does change, you have to clear the cache
-    /// by using [`clear_scrollable_with_id`](CommonMarkCache::clear_scrollable_with_id) or
-    /// [`clear_scrollable`](CommonMarkCache::clear_scrollable). If the content changes every frame,
-    /// it's faster to call [`show`] directly.
-    ///
     /// [`ScrollArea`]: egui::ScrollArea
     /// [`show`]: crate::CommonMarkViewer::show
     #[cfg(feature = "pulldown_cmark")]
