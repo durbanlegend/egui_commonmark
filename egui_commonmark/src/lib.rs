@@ -131,6 +131,7 @@ impl<'f> CommonMarkViewer<'f> {
         self
     }
 
+    /// Redundant: Replaced by cross-platform standard canonicalisation and Url conversion.
     /// Allows changing the default implicit `file://` uri scheme.
     /// This does nothing if [`explicit_image_uri_scheme`](`Self::explicit_image_uri_scheme`) is enabled
     ///

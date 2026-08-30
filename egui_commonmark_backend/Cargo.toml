@@ -25,6 +25,8 @@ syntect = { version = "5.0.0", optional = true, default-features = false, featur
     "default-fancy",
 ] }
 
+url = "2"
+
 [features]
 better_syntax_highlighting = ["dep:syntect"]
 embedded_image = ["dep:data-url"]

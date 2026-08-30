@@ -1,6 +1,6 @@
 use crate::alerts::AlertBundle;
 use egui::{RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use crate::pulldown::ScrollableCache;
 
@@ -259,7 +259,7 @@ impl Image {
             uri.to_string()
         } else {
             // Assume file scheme
-            format!("{}{uri}", options.default_implicit_uri_scheme)
+            path_to_uri(PathBuf::from(uri)).unwrap_or_default()
         };
 
         Self {
@@ -298,6 +298,19 @@ impl Image {
         );
         if is_pending { 0.0 } else { height }
     }
+}
+
+use std::path::Path;
+use url::Url;
+
+fn path_to_uri(relative_path: impl AsRef<Path>) -> Result<String, Box<dyn std::error::Error>> {
+    // 1. Resolve relative path to absolute path
+    let abs_path = std::fs::canonicalize(relative_path)?;
+
+    // 2. Convert absolute Path to a file:// Url
+    let url = Url::from_file_path(abs_path).map_err(|()| "Failed to convert path to file URI")?;
+
+    Ok(url.to_string())
 }
 
 pub struct CodeBlock {
