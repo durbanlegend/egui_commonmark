@@ -1030,7 +1030,7 @@ impl CommonMarkViewerInternal {
         options: &CommonMarkOptions,
     ) {
         if let Some(image) = &mut self.image {
-            image.alt_text.push(self.text_style.to_richtext(ui, &text));
+            image.push_alt_text(self.text_style.to_richtext(ui, &text), src_span);
         } else if let Some(block) = &mut self.code_block {
             block.push_text(&text, src_span);
         } else if let Some(link) = &mut self.link {
@@ -1291,10 +1291,21 @@ impl CommonMarkViewerInternal {
                 }
             }
             pulldown_cmark::TagEnd::Image => {
-                if let Some(image) = self.image.take()
-                    && image.end(ui, options) < 1.0
-                {
-                    self.any_image_loading = true;
+                if let Some(image) = self.image.take() {
+                    let (height, scrolled, match_ys) = image.end(
+                        ui,
+                        cache,
+                        options,
+                        self.want_scroll_to_active_match,
+                        self.content_origin_y,
+                    );
+                    if height < 1.0 {
+                        self.any_image_loading = true;
+                    }
+                    if scrolled {
+                        self.want_scroll_to_active_match = false;
+                    }
+                    self.search_match_ys_scratch.extend(match_ys);
                 }
             }
             pulldown_cmark::TagEnd::HtmlBlock => {

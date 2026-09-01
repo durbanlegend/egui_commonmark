@@ -375,6 +375,12 @@ impl Link {
 pub struct Image {
     pub uri: String,
     pub alt_text: Vec<RichText>,
+    /// Source byte spans (in the original markdown) of each alt-text [`Text`]
+    /// event accumulated while this image was being parsed. Used to match
+    /// global search ranges against the image at render time.
+    ///
+    /// [`Text`]: pulldown_cmark::Event::Text
+    pub alt_src_spans: Vec<Range<usize>>,
 }
 
 impl Image {
@@ -391,20 +397,51 @@ impl Image {
         Self {
             uri,
             alt_text: Vec::new(),
+            alt_src_spans: Vec::new(),
         }
     }
 
-    /// Returns the rendered height in points, or `0.0` if the texture is still
-    /// loading. The caller uses this to detect whether split-point heights can
-    /// be trusted.
-    pub fn end(self, ui: &mut Ui, options: &CommonMarkOptions) -> f32 {
-        let Self { uri, alt_text } = self;
+    /// Append a piece of alt text, recording its source span so that search
+    /// matches can later be mapped back onto it (mirroring [`Link::push_text`]).
+    pub fn push_alt_text(&mut self, text: RichText, src_span: Range<usize>) {
+        self.alt_text.push(text);
+        self.alt_src_spans.push(src_span);
+    }
+
+    /// Renders the image.
+    ///
+    /// Returns `(height, scrolled, match_ys)` where:
+    /// - `height` is `0.0` while the texture is still loading (same semantics
+    ///   as before; the caller uses it to detect unreliable split-point heights),
+    /// - `scrolled` is `true` if the active search match fell on this image and
+    ///   the view was scrolled to it (the caller should then clear
+    ///   `want_scroll_to_active_match`),
+    /// - `match_ys` is a list of `(global_match_index, virtual_y)` pairs for
+    ///   every global search range that overlaps any of the image's alt-text
+    ///   source spans. The caller should extend `search_match_ys_scratch` with
+    ///   these so that `sync_active_match` can locate the image on screen.
+    pub fn end(
+        self,
+        ui: &mut Ui,
+        cache: &CommonMarkCache,
+        options: &CommonMarkOptions,
+        want_scroll_to_active_match: bool,
+        content_origin_y: f32,
+    ) -> (f32, bool, Vec<(usize, f32)>) {
+        let Self {
+            uri,
+            alt_text,
+            alt_src_spans,
+        } = self;
+
         let response = ui.add(
             egui::Image::from_uri(&uri)
                 .fit_to_original_size(1.0)
                 .max_width(options.max_width(ui)),
         );
-        let height = response.rect.height();
+        // Save the rect now; `on_hover_ui_at_pointer` consumes `response`.
+        let rect = response.rect;
+
         if !alt_text.is_empty() && options.show_alt_text_on_hover {
             response.on_hover_ui_at_pointer(|ui| {
                 for alt in alt_text {
@@ -412,6 +449,7 @@ impl Image {
                 }
             });
         }
+
         // egui's 24×24 placeholder means height ≥ 1.0 even while Pending, so
         // query the load state directly rather than relying on height alone.
         let is_pending = matches!(
@@ -422,7 +460,61 @@ impl Image {
             ),
             Ok(egui::load::TexturePoll::Pending { .. })
         );
-        if is_pending { 0.0 } else { height }
+        let height = if is_pending { 0.0 } else { rect.height() };
+
+        // --- Search match handling ---
+        let ranges = cache.search_ranges();
+        if ranges.is_empty() || alt_src_spans.is_empty() {
+            return (height, false, vec![]);
+        }
+
+        let has_active_match = cache.active_search_range().is_some_and(|a| {
+            alt_src_spans
+                .iter()
+                .any(|span| a.start < span.end && a.end > span.start)
+        });
+
+        // One `(global_index, virtual_y)` entry per matching search range.
+        let virtual_y = rect.min.y - content_origin_y;
+        let match_ys: Vec<(usize, f32)> = ranges
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.start < r.end
+                    && alt_src_spans
+                        .iter()
+                        .any(|span| r.start < span.end && r.end > span.start)
+            })
+            .map(|(i, _)| (i, virtual_y))
+            .collect();
+
+        // Draw a colored border around the image for every match that hits it.
+        // Active match gets a thicker, more prominent stroke.
+        if !match_ys.is_empty() && ui.is_rect_visible(rect) {
+            let make_opaque = |c: egui::Color32| egui::Color32::from_rgb(c.r(), c.g(), c.b());
+            let (stroke_color, stroke_width): (egui::Color32, f32) = if has_active_match {
+                (make_opaque(options.search_active_match_bg(ui)), 2.0)
+            } else {
+                (make_opaque(options.search_match_bg(ui)), 1.5)
+            };
+            ui.painter().add(egui::epaint::RectShape::new(
+                rect,
+                egui::CornerRadius::default(),
+                egui::Color32::TRANSPARENT,
+                egui::Stroke::new(stroke_width, stroke_color),
+                egui::StrokeKind::Outside,
+            ));
+        }
+
+        // Scroll the active match into view if requested.
+        let scrolled = if has_active_match && want_scroll_to_active_match {
+            ui.scroll_to_rect(rect, Some(egui::Align::Center));
+            true
+        } else {
+            false
+        };
+
+        (height, scrolled, match_ys)
     }
 }
 
