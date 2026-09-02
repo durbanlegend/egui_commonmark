@@ -710,10 +710,15 @@ impl CommonMarkViewerInternal {
             }
         }
 
-        // Invalidate the cache when the available size changes (e.g. window resize).
+        // Invalidate the cache when the available *width* changes (e.g. window resize).
+        // Height changes — such as the search bar or TOC panel opening/closing —
+        // do not affect split points or page_size: text wrapping only depends on
+        // width, so a height-only change must never force a full render, especially on
+        // a large document.
         let scroll_cache = scroll_cache(cache, &source_id);
-        if available_size != scroll_cache.available_size {
-            scroll_cache.available_size = available_size;
+        let width_changed = (available_size.x - scroll_cache.available_size.x).abs() > 0.5;
+        scroll_cache.available_size = available_size; // always keep Y bookkeeping current
+        if width_changed {
             scroll_cache.page_size = None;
             scroll_cache.split_points.clear();
             scroll_cache.heading_y_positions.clear();

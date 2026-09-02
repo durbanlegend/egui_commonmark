@@ -787,7 +787,7 @@ impl CommonMarkViewerInternal {
                             destination: #destination.to_owned(),
                             text: vec![#text_stream],
                             chunks: vec![]
-                        }.end(ui, #cache, &options, &mut None, false);)
+                        }.end(ui, #cache, &options, &mut None, false, 0.0_f32);)
                     }
                 } else {
                     TokenStream::new()
