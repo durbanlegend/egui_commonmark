@@ -356,15 +356,20 @@ impl<'f> CommonMarkViewer<'f> {
     /// [`show`]: crate::CommonMarkViewer::show
     #[cfg(feature = "pulldown_cmark")]
     pub fn show_scrollable(
-        self,
+        mut self,
         source_id: impl egui::AsId,
         ui: &mut egui::Ui,
         cache: &mut CommonMarkCache,
         text: &str,
     ) {
+        let id = Id::new(source_id);
+        // Propagate the source_id into options so that event_text, blockquote,
+        // and start_tag all look up the correct ScrollableCache entry, matching
+        // what show_with_id already does for the non-scrollable path.
+        self.options.source_id = Some(id);
         egui_commonmark_backend::prepare_show(cache, ui.ctx());
         parsers::pulldown::CommonMarkViewerInternal::new().show_scrollable(
-            Id::new(source_id),
+            id,
             ui,
             cache,
             &self.options,

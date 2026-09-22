@@ -622,7 +622,8 @@ impl CodeBlock {
         // match partway down a large block gets the Y of its actual line,
         // not the block top, so the in-viewport check stays correct while
         // the user scrolls through the block.
-        let search_cache = cache.search_cache(&options.source_id.unwrap_or(egui::Id::NULL));
+        let search_cache =
+            &scroll_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL)).search_cache;
         let match_ys: Vec<(usize, f32)> = self
             .chunks
             .iter()
@@ -1351,7 +1352,8 @@ impl CommonMarkCache {
     /// use [`sync_scrollable_active_match`](Self::sync_scrollable_active_match)
     /// instead (see the `scroll` example).
     pub fn sync_active_match(&mut self, source_id: impl AsId, user_scrolled: bool) {
-        let search_cache = self.search_cache(Id::new(source_id));
+        let id = Id::new(source_id);
+        let search_cache = &mut scroll_cache(self, &id).search_cache;
 
         if user_scrolled {
             search_cache.search_scroll_protection = 0;

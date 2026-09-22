@@ -200,13 +200,16 @@ impl CommonMarkViewerInternal {
         });
 
         self.any_image_loading = false;
-        self.want_scroll_to_active_match = record_id
-            .and_then(|id| {
-                Some(
-                    scroll_cache(cache, &id)
-                        .search_cache
-                        .take_pending_scroll_to_active_match(),
-                )
+        // Take the pending scroll-to-active-match every frame, not only on
+        // rebuild frames (when record_id is Some). On steady-state frames
+        // record_id is None (split points are cached) but the user may have
+        // just pressed Next/Prev, so we must still honour the request.
+        let scroll_source_id = split_points_id.or(options.source_id);
+        self.want_scroll_to_active_match = scroll_source_id
+            .map(|id| {
+                scroll_cache(cache, &id)
+                    .search_cache
+                    .take_pending_scroll_to_active_match()
             })
             .unwrap_or(false);
         self.search_match_ys_scratch.clear();
@@ -220,9 +223,11 @@ impl CommonMarkViewerInternal {
             // Do a full render
             let content_origin_y = self.full_render(cache, options, text, record_id, max_width, ui);
 
-            let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
-            // deferral to make it consistent no matter whether the target is before or after the link
-            *sc.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+            {
+                let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                // deferral to make it consistent no matter whether the target is before or after the link
+                *sc.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+            }
 
             if let Some(source_id) = split_points_id {
                 if self.any_image_loading {
@@ -234,8 +239,8 @@ impl CommonMarkViewerInternal {
                     sc.heading_y_positions.clear();
                 } else {
                     let final_y = ui.next_widget_position().y;
-                    // scroll_cache(cache, &source_id).page_size =
-                    sc.page_size = Some(egui::vec2(max_width, final_y - content_origin_y));
+                    scroll_cache(cache, &source_id).page_size =
+                        Some(egui::vec2(max_width, final_y - content_origin_y));
                 }
             } else {
                 // Non-scrollable show() path: flush the per-match virtual-y positions
@@ -243,6 +248,7 @@ impl CommonMarkViewerInternal {
                 // match after the user scrolls.
                 let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
                 let viewport_height = ui.clip_rect().height();
+                let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
                 sc.search_cache.update_show_viewport(
                     self.search_match_ys_scratch.drain(..),
                     viewport_top_y,
@@ -250,10 +256,7 @@ impl CommonMarkViewerInternal {
                 );
                 // For show_with_id: keep the `ScrollableCache`'s viewport position in sync
                 // so that `viewport_start_byte_offset` returns the current scroll location.
-                // `options.source_id` is `Some` on every frame (including no-rebuild frames).
-                // if let Some(id) = options.source_id {
                 sc.search_cache.last_viewport_top_y = viewport_top_y;
-                // }
             }
         });
 
@@ -417,7 +420,9 @@ impl CommonMarkViewerInternal {
                         scroll_cache(cache, &source_id).page_size = None;
                     }
                     // Keep last_viewport_top_y in sync for viewport_start_byte_offset.
-                    cache.search_cache(&source_id).last_viewport_top_y = viewport_top_y;
+                    scroll_cache(cache, &source_id)
+                        .search_cache
+                        .last_viewport_top_y = viewport_top_y;
                 });
             return;
         }
@@ -905,8 +910,8 @@ impl CommonMarkViewerInternal {
                     // `update_search_matches` stored the keyword's source bytes as the
                     // match range, so we check overlap with `ident_src` to decide.
                     let (has_title_match, is_title_active, title_global_idx) = {
-                        let search_cache =
-                            cache.search_cache(&options.source_id.unwrap_or(Id::NULL));
+                        let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                        let search_cache = &sc.search_cache;
                         let ranges = search_cache.search_ranges();
                         let has_match = !ranges.is_empty()
                             && ranges
@@ -1174,12 +1179,8 @@ impl CommonMarkViewerInternal {
         } else if let Some(link) = &mut self.link {
             link.push_text(self.text_style.to_richtext(ui, &text), src_span);
         } else {
-            let source_id = &options.source_id.unwrap_or(Id::NULL);
-            // dbg!(&search_cache.search_query);
-            // cache.scroll.iter().for_each(|(id, sc)| {
-            //     eprintln!("id={id:?}, search_query={}", sc.search_cache.search_query);
-            // });
-            let search_cache = cache.search_cache(source_id);
+            let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+            let search_cache = &mut sc.search_cache;
 
             let rich_text = self.text_style.to_richtext(ui, &text);
             let ranges = search_cache.search_ranges();
@@ -1217,7 +1218,7 @@ impl CommonMarkViewerInternal {
                 })
                 .map(|(i, _)| i)
                 .collect();
-            dbg!(&global_match_indices);
+
             for (global_idx, maybe_rect) in global_match_indices.iter().zip(all_rects.iter()) {
                 if let Some(rect) = maybe_rect {
                     self.search_match_ys_scratch
