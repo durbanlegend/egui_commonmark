@@ -13,7 +13,8 @@ use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
 struct App {
     cache: CommonMarkCache,
-    egui_source_id: String,
+    // `egui` source_id to identify the main viewer for search + scrolling state
+    source_id: String,
     viewport_cache: bool,
     content: String,
 }
@@ -27,10 +28,12 @@ impl eframe::App for App {
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                let response = ui.text_edit_singleline(&mut self.cache.search_query);
+                let response = ui.text_edit_singleline(
+                    &mut self.cache.search_cache(&self.source_id).search_query,
+                );
                 if response.changed() {
                     self.cache
-                        .update_search_matches(&self.egui_source_id, &self.content);
+                        .update_search_matches(&self.source_id, &self.content);
                 }
                 // Re-request focus so that repeated Enter presses keep working without having to
                 // click back into the box each time.
@@ -39,21 +42,27 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self.cache.search_ranges().len();
-                ui.label(match self.cache.active_match() {
-                    Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
-                    _ => format!("0/{match_count}"),
-                });
+                let match_count = self
+                    .cache
+                    .search_cache(&self.source_id)
+                    .search_ranges()
+                    .len();
+                ui.label(
+                    match self.cache.search_cache(&self.source_id).active_match() {
+                        Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
+                        _ => format!("0/{match_count}"),
+                    },
+                );
 
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.go_to_match(-1);
+                    self.cache.search_cache(&self.source_id).go_to_match(-1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.go_to_match(1);
+                    self.cache.search_cache(&self.source_id).go_to_match(1);
                 }
             });
         });
@@ -62,7 +71,7 @@ impl eframe::App for App {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
             // Handle any keyboard scrolling requests.
-            let user_scrolled = self.cache.handle_keyboard_scrolling(ui);
+            let user_scrolled = self.cache.handle_keyboard_scrolling(&self.source_id, ui);
 
             // `show_scrollable` will automatically scroll by any accumulated scroll amount
             // before rendering
@@ -70,7 +79,7 @@ impl eframe::App for App {
                 .max_image_width(Some(512))
                 .enable_scroll_to_heading(true)
                 .viewport_cache(self.viewport_cache)
-                .show_scrollable(&self.egui_source_id, ui, &mut self.cache, &self.content);
+                .show_scrollable(&self.source_id, ui, &mut self.cache, &self.content);
 
             // Optionally anchor any current search to the current viewport so that Next/Previous will
             // continue from there instead of from its previous location.
@@ -78,7 +87,7 @@ impl eframe::App for App {
             // anchored to the current viewport because the `egui_source_id` is passed in, whether or not
             // the relevant sync active match method is called or `viewport_cache` is enabled.
             self.cache.sync_scrollable_active_match(
-                &self.egui_source_id,
+                &self.source_id,
                 self.viewport_cache,
                 user_scrolled,
             );
@@ -110,7 +119,7 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
-                egui_source_id: String::from("scroll_example"),
+                source_id: String::from("scroll_example"),
                 viewport_cache,
                 content,
             }))
