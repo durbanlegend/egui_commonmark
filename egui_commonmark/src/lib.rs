@@ -77,7 +77,9 @@ mod parsers;
 pub use egui_commonmark_backend::RenderHtmlFn;
 pub use egui_commonmark_backend::RenderMathFn;
 pub use egui_commonmark_backend::alerts::{Alert, AlertBundle};
-pub use egui_commonmark_backend::misc::{CommonMarkCache, SearchOptions};
+pub use egui_commonmark_backend::misc::CommonMarkCache;
+#[cfg(feature = "regex")]
+pub use egui_commonmark_backend::misc::SearchOptions;
 
 #[cfg(feature = "better_syntax_highlighting")]
 pub use egui_commonmark_backend::syntect;
@@ -242,18 +244,16 @@ impl<'f> CommonMarkViewer<'f> {
     }
 
     /// Override the background colour used to highlight passive (non-active)
-    /// search matches (see [`CommonMarkCache::set_search_ranges`]). By
-    /// default a theme-derived colour is used, so this is only needed if you
-    /// want something else.
+    /// search matches. By default a theme-derived colour is used.
+    #[cfg(feature = "regex")]
     pub fn search_match_color(mut self, color: egui::Color32) -> Self {
         self.options.search_match_bg = Some(color);
         self
     }
 
     /// Override the background colour used to highlight the active (focused)
-    /// search match (see [`CommonMarkCache::set_active_search_range`]). By
-    /// default a theme-derived colour is used, so this is only needed if you
-    /// want something else.
+    /// search match. By default a theme-derived colour is used.
+    #[cfg(feature = "regex")]
     pub fn search_active_match_color(mut self, color: egui::Color32) -> Self {
         self.options.search_active_match_bg = Some(color);
         self

@@ -26,7 +26,9 @@ pub use {
 };
 
 // The only structs that may be used directly. (If one does not need egui_commonmark)
-pub use misc::{CommonMarkCache, SearchOptions};
+pub use misc::CommonMarkCache;
+#[cfg(feature = "regex")]
+pub use misc::SearchOptions;
 
 #[cfg(feature = "better_syntax_highlighting")]
 pub use syntect;

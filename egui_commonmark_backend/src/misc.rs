@@ -1,7 +1,7 @@
-use crate::{
-    alerts::{AlertBundle, try_get_alert},
-    search,
-};
+use crate::alerts::AlertBundle;
+#[cfg(feature = "regex")]
+use crate::{alerts::try_get_alert, search};
+#[cfg(feature = "regex")]
 use bitflags::bitflags;
 use egui::{Id, RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
@@ -47,10 +47,12 @@ pub struct CommonMarkOptions<'f> {
     pub use_viewport_cache: bool,
     /// Background colour for passive search matches. When `None`, a
     /// theme-derived default is used (see [`crate::search::default_match_bg`]).
+    #[cfg(feature = "regex")]
     pub search_match_bg: Option<egui::Color32>,
     /// Background colour for the active (focused) search match. When
     /// `None`, a theme-derived default is used (see
     /// [`crate::search::default_active_match_bg`]).
+    #[cfg(feature = "regex")]
     pub search_active_match_bg: Option<egui::Color32>,
     /// When set via [`show_with_id`](crate::CommonMarkViewer::show_with_id),
     /// `full_render` records block-boundary positions (split points) under
@@ -83,10 +85,13 @@ impl std::fmt::Debug for CommonMarkOptions<'_> {
             )
             .field("alerts", &self.alerts)
             .field("mutable", &self.mutable)
-            .field("search_match_bg", &self.search_match_bg)
-            .field("search_active_match_bg", &self.search_active_match_bg)
-            .field("source_id", &self.source_id)
-            .finish()
+            .field("source_id", &self.source_id);
+
+        #[cfg(feature = "regex")]
+        s.field("search_match_bg", &self.search_match_bg)
+            .field("search_active_match_bg", &self.search_active_match_bg);
+
+        s.finish()
     }
 }
 
@@ -109,7 +114,9 @@ impl Default for CommonMarkOptions<'_> {
             html_fn: None,
             enable_scroll_to_heading: false,
             use_viewport_cache: false,
+            #[cfg(feature = "regex")]
             search_match_bg: None,
+            #[cfg(feature = "regex")]
             search_active_match_bg: None,
             source_id: Some(Id::NULL),
         }
@@ -144,6 +151,7 @@ impl CommonMarkOptions<'_> {
 
     /// The background colour to use for passive search matches: the
     /// explicit override if one was set, otherwise a theme-derived default.
+    #[cfg(feature = "regex")]
     pub fn search_match_bg(&self, ui: &Ui) -> egui::Color32 {
         self.search_match_bg
             .unwrap_or_else(|| search::default_match_bg(ui.visuals()))
@@ -151,6 +159,7 @@ impl CommonMarkOptions<'_> {
 
     /// The background colour to use for the active search match: the
     /// explicit override if one was set, otherwise a theme-derived default.
+    #[cfg(feature = "regex")]
     pub fn search_active_match_bg(&self, ui: &Ui) -> egui::Color32 {
         self.search_active_match_bg
             .unwrap_or_else(|| search::default_active_match_bg(ui.visuals()))
@@ -295,23 +304,27 @@ impl Link {
             return (false, vec![]);
         }
 
-        let id = options.source_id.unwrap_or(Id::NULL);
-        let search_cache = cache.search_cache_mut(&id);
-        let ranges = search_cache.search_ranges();
-        let (intervals, has_active_match) = if ranges.is_empty() {
-            (vec![], false)
-        } else {
-            let intervals = search::chunked_search_intervals(
-                &chunks,
-                ranges,
-                search_cache.active_search_range(),
-            );
-            let has_active_match = intervals.iter().any(|(_, is_active)| *is_active);
-            (intervals, has_active_match)
+        #[cfg(feature = "regex")]
+        let (intervals, has_active_match, search_ranges_snapshot) = {
+            let id = options.source_id.unwrap_or(Id::NULL);
+            let sc = cache.search_cache_mut(&id);
+            let ranges = sc.search_ranges();
+            let (intervals, has_active_match) = if ranges.is_empty() {
+                (vec![], false)
+            } else {
+                let iv =
+                    search::chunked_search_intervals(&chunks, ranges, sc.active_search_range());
+                let active = iv.iter().any(|(_, is_active)| *is_active);
+                (iv, active)
+            };
+            let snapshot: Vec<Range<usize>> = sc.search_ranges().to_vec();
+            (intervals, has_active_match, snapshot)
         };
-        // Snapshot the ranges so the mutable borrow of `cache` (via search_cache) ends here,
-        // before we need cache.link_hooks() / cache.link_hooks_mut() below.
-        let search_ranges_snapshot: Vec<Range<usize>> = search_cache.search_ranges().to_vec();
+        // Without the regex feature there is no search state; intervals is only
+        // used inside regex-gated blocks so we only bind the two variables that
+        // the non-search render path actually reads.
+        #[cfg(not(feature = "regex"))]
+        let (has_active_match, search_ranges_snapshot): (bool, Vec<Range<usize>>) = (false, vec![]);
 
         let mut layout_job = LayoutJob::default();
         for t in text {
@@ -322,6 +335,7 @@ impl Link {
                 egui::Align::LEFT,
             );
         }
+        #[cfg(feature = "regex")]
         if !intervals.is_empty() {
             search::apply_search_highlights(
                 &mut layout_job,
@@ -427,6 +441,11 @@ impl Image {
     ///   every global search range that overlaps any of the image's alt-text
     ///   source spans. The caller should extend `search_match_ys_scratch` with
     ///   these so that `sync_active_match` can locate the image on screen.
+    #[cfg_attr(
+        not(feature = "regex"),
+        allow(unused_variables), // cache, want_scroll_to_active_match, content_origin_y,
+                                  // alt_src_spans only used in the regex-gated search section
+    )]
     pub fn end(
         self,
         ui: &mut Ui,
@@ -469,63 +488,63 @@ impl Image {
         );
         let height = if is_pending { 0.0 } else { rect.height() };
 
-        // --- Search match handling ---
-        let source_id = options.source_id.unwrap_or(Id::NULL);
-        let vc = viewer_cache(cache, &source_id);
-        let search_cache = &mut vc.search_cache;
+        // --- Search match highlighting (regex feature only) ---
+        #[cfg(feature = "regex")]
+        {
+            let source_id = options.source_id.unwrap_or(Id::NULL);
+            let vc = viewer_cache(cache, &source_id);
+            let search_cache = &mut vc.search_cache;
 
-        let ranges = search_cache.search_ranges();
-        if ranges.is_empty() || alt_src_spans.is_empty() {
-            return (height, false, vec![]);
-        }
-
-        let has_active_match = search_cache.active_search_range().is_some_and(|a| {
-            alt_src_spans
-                .iter()
-                .any(|span| a.start < span.end && a.end > span.start)
-        });
-
-        // One `(global_index, virtual_y)` entry per matching search range.
-        let virtual_y = rect.min.y - content_origin_y;
-        let match_ys: Vec<(usize, f32)> = ranges
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| {
-                r.start < r.end
-                    && alt_src_spans
+            let ranges = search_cache.search_ranges();
+            if !ranges.is_empty() && !alt_src_spans.is_empty() {
+                let has_active_match = search_cache.active_search_range().is_some_and(|a| {
+                    alt_src_spans
                         .iter()
-                        .any(|span| r.start < span.end && r.end > span.start)
-            })
-            .map(|(i, _)| (i, virtual_y))
-            .collect();
+                        .any(|span| a.start < span.end && a.end > span.start)
+                });
 
-        // Draw a colored border around the image for every match that hits it.
-        // Active match gets a thicker, more prominent stroke.
-        if !match_ys.is_empty() && ui.is_rect_visible(rect) {
-            let make_opaque = |c: egui::Color32| egui::Color32::from_rgb(c.r(), c.g(), c.b());
-            let (stroke_color, stroke_width): (egui::Color32, f32) = if has_active_match {
-                (make_opaque(options.search_active_match_bg(ui)), 2.0)
-            } else {
-                (make_opaque(options.search_match_bg(ui)), 1.5)
-            };
-            ui.painter().add(egui::epaint::RectShape::new(
-                rect,
-                egui::CornerRadius::default(),
-                egui::Color32::TRANSPARENT,
-                egui::Stroke::new(stroke_width, stroke_color),
-                egui::StrokeKind::Outside,
-            ));
+                let virtual_y = rect.min.y - content_origin_y;
+                let match_ys: Vec<(usize, f32)> = ranges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        r.start < r.end
+                            && alt_src_spans
+                                .iter()
+                                .any(|span| r.start < span.end && r.end > span.start)
+                    })
+                    .map(|(i, _)| (i, virtual_y))
+                    .collect();
+
+                if !match_ys.is_empty() && ui.is_rect_visible(rect) {
+                    let make_opaque =
+                        |c: egui::Color32| egui::Color32::from_rgb(c.r(), c.g(), c.b());
+                    let (stroke_color, stroke_width): (egui::Color32, f32) = if has_active_match {
+                        (make_opaque(options.search_active_match_bg(ui)), 2.0)
+                    } else {
+                        (make_opaque(options.search_match_bg(ui)), 1.5)
+                    };
+                    ui.painter().add(egui::epaint::RectShape::new(
+                        rect,
+                        egui::CornerRadius::default(),
+                        egui::Color32::TRANSPARENT,
+                        egui::Stroke::new(stroke_width, stroke_color),
+                        egui::StrokeKind::Outside,
+                    ));
+                }
+
+                let scrolled = if has_active_match && want_scroll_to_active_match {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    true
+                } else {
+                    false
+                };
+
+                return (height, scrolled, match_ys);
+            }
         }
 
-        // Scroll the active match into view if requested.
-        let scrolled = if has_active_match && want_scroll_to_active_match {
-            ui.scroll_to_rect(rect, Some(egui::Align::Center));
-            true
-        } else {
-            false
-        };
-
-        (height, scrolled, match_ys)
+        (height, false, vec![])
     }
 }
 
@@ -558,6 +577,11 @@ impl CodeBlock {
     /// [`Link::end`] for details). Returns `(scrolled, match_ys)` where
     /// `match_ys` lists `(global_match_index, virtual_y)` for every search
     /// match in this block so the caller can extend `search_match_ys_scratch`.
+    #[cfg_attr(
+        not(feature = "regex"),
+        allow(unused_variables), // content_origin_y, galley_pos, galley only used by
+                                  // the regex-gated match-Y tracking block
+    )]
     pub fn end(
         &self,
         ui: &mut Ui,
@@ -567,6 +591,7 @@ impl CodeBlock {
         want_scroll_to_active_match: bool,
         content_origin_y: f32,
     ) -> (bool, Vec<(usize, f32)>) {
+        #[cfg(feature = "regex")]
         let intervals = {
             let vc = viewer_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL));
             let search_cache = &vc.search_cache;
@@ -576,6 +601,9 @@ impl CodeBlock {
                 search_cache.active_search_range(),
             )
         };
+        #[cfg(not(feature = "regex"))]
+        let intervals: Vec<(std::ops::Range<usize>, bool)> = vec![];
+
         let scroll_to_active_match = want_scroll_to_active_match
             .then(|| intervals.iter().find(|(_, is_active)| *is_active))
             .flatten()
@@ -593,6 +621,7 @@ impl CodeBlock {
                         plain_highlighting(ui, string.as_str())
                     };
 
+                    #[cfg(feature = "regex")]
                     if !intervals.is_empty() {
                         search::apply_search_highlights(
                             &mut job,
@@ -617,43 +646,44 @@ impl CodeBlock {
             .inner;
 
         // Record the exact virtual Y of each search match by querying the
-        // galley that was just rendered. Unlike the old single block-top Y
-        // approach, this handles code blocks taller than one viewport: a
-        // match partway down a large block gets the Y of its actual line,
-        // not the block top, so the in-viewport check stays correct while
-        // the user scrolls through the block.
-        let search_cache =
-            &viewer_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL)).search_cache;
-        let match_ys: Vec<(usize, f32)> = self
-            .chunks
-            .iter()
-            .flat_map(|(local_chunk, src_chunk)| {
-                let chunk_text_len = local_chunk.end.saturating_sub(local_chunk.start);
-                search_cache
-                    .search_ranges()
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.start < src_chunk.end && r.end > src_chunk.start)
-                    .filter_map(|(global_idx, r)| {
-                        // Translate source byte range to local range within `content`.
-                        let local_start =
-                            r.start.saturating_sub(src_chunk.start).min(chunk_text_len)
-                                + local_chunk.start;
-                        let local_end = r.end.saturating_sub(src_chunk.start).min(chunk_text_len)
-                            + local_chunk.start;
-                        if local_start >= local_end {
-                            return None;
-                        }
-                        let rect = crate::elements::highlight_rect_for_byte_range(
-                            &galley,
-                            galley_pos,
-                            local_start..local_end,
-                        )?;
-                        Some((global_idx, rect.min.y - content_origin_y))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
+        // galley that was just rendered, so that we can scroll to the exact
+        // line of any active match within the block.
+        #[cfg(feature = "regex")]
+        let match_ys: Vec<(usize, f32)> = {
+            let search_cache =
+                &viewer_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL)).search_cache;
+            self.chunks
+                .iter()
+                .flat_map(|(local_chunk, src_chunk)| {
+                    let chunk_text_len = local_chunk.end.saturating_sub(local_chunk.start);
+                    search_cache
+                        .search_ranges()
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, r)| r.start < src_chunk.end && r.end > src_chunk.start)
+                        .filter_map(|(global_idx, r)| {
+                            let local_start =
+                                r.start.saturating_sub(src_chunk.start).min(chunk_text_len)
+                                    + local_chunk.start;
+                            let local_end =
+                                r.end.saturating_sub(src_chunk.start).min(chunk_text_len)
+                                    + local_chunk.start;
+                            if local_start >= local_end {
+                                return None;
+                            }
+                            let rect = crate::elements::highlight_rect_for_byte_range(
+                                &galley,
+                                galley_pos,
+                                local_start..local_end,
+                            )?;
+                            Some((global_idx, rect.min.y - content_origin_y))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        };
+        #[cfg(not(feature = "regex"))]
+        let match_ys: Vec<(usize, f32)> = vec![];
 
         (did_scroll, match_ys)
     }
@@ -773,6 +803,7 @@ fn default_theme(ui: &Ui) -> &str {
     }
 }
 
+#[cfg(feature = "regex")]
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct SearchOptions: u8 {
@@ -871,6 +902,18 @@ impl CommonMarkCache {
     /// id was not in the cache.
     pub fn clear_viewer(&mut self, id: &Id) -> bool {
         self.viewers.remove(id).is_some()
+    }
+
+    /// Programmatically scroll the viewer identified by `id` to the heading
+    /// with the given anchor slug on the next rendered frame. The slug must
+    /// match a heading defined with the `{#my-anchor}` attribute syntax.
+    ///
+    /// Pass `None` to cancel a pending scroll.
+    ///
+    /// This is useful when driving navigation from outside the viewer — for
+    /// example, clicking an entry in a separate table-of-contents widget.
+    pub fn scroll_to_heading(&mut self, id: &Id, slug: Option<String>) {
+        *viewer_cache(self, id).scroll_to_id_target_mut() = slug;
     }
 
     /// If the user clicks on a link in the markdown render that has `name` as a link. The hook
@@ -990,7 +1033,10 @@ impl CommonMarkCache {
             ui.input(egui::InputState::is_scrolling) || key_scroll_delta.is_some();
 
         if user_scroll_input {
-            vc.search_cache.search_scroll_protection = 0;
+            #[cfg(feature = "regex")]
+            {
+                vc.search_cache.search_scroll_protection = 0;
+            }
         }
 
         // Return combined user scroll status
@@ -1007,6 +1053,7 @@ impl CommonMarkCache {
         }
     }
 
+    #[cfg(feature = "regex")]
     pub fn search_regex_error(&mut self, id: &Id) -> Option<String> {
         viewer_cache(self, id)
             .search_cache
@@ -1036,6 +1083,7 @@ impl CommonMarkCache {
     /// same `egui_source_id`. When using plain
     /// [`show`](crate::CommonMarkViewer::show), the search always starts from
     /// the document top.
+    #[cfg(feature = "regex")]
     #[allow(clippy::too_many_lines)]
     pub fn update_search_matches(&mut self, id: &Id, content: &str) {
         let vc = viewer_cache(self, id);
@@ -1291,12 +1339,14 @@ impl CommonMarkCache {
         search_cache.search_scroll_protection = 30;
     }
 
+    #[cfg(feature = "regex")]
     pub fn search_cache_mut(&mut self, id: &Id) -> &mut crate::pulldown::SearchCache {
         &mut viewer_cache(self, id).search_cache
     }
 
     /// The current set of search-match byte ranges for this viewer, or an
     /// empty slice if no search has been run yet.
+    #[cfg(feature = "regex")]
     pub fn search_ranges(&self, id: &Id) -> &[Range<usize>] {
         self.viewers
             .get(id)
@@ -1306,23 +1356,27 @@ impl CommonMarkCache {
 
     /// The zero-based ordinal of the currently active (focused) search match,
     /// or `None` if there is no active match.
+    #[cfg(feature = "regex")]
     pub fn active_match(&self, id: &Id) -> Option<usize> {
         self.viewers.get(id)?.search_cache.active_match()
     }
 
     /// Advance the active match by `delta` steps (negative = backwards),
     /// wrapping around. Does nothing if there are no matches.
+    #[cfg(feature = "regex")]
     pub fn go_to_match(&mut self, id: &Id, delta: isize) {
         viewer_cache(self, id).search_cache.go_to_match(delta);
     }
 
     /// Mutable access to the search query string for this viewer, suitable
     /// for binding directly to a [`egui::TextEdit`].
+    #[cfg(feature = "regex")]
     pub fn search_query_mut(&mut self, id: &Id) -> &mut String {
         &mut viewer_cache(self, id).search_cache.search_query
     }
 
     /// Mutable access to the search options bitflags for this viewer.
+    #[cfg(feature = "regex")]
     pub fn search_options_mut(&mut self, id: &Id) -> &mut SearchOptions {
         &mut viewer_cache(self, id).search_cache.search_options
     }
@@ -1351,6 +1405,7 @@ impl CommonMarkCache {
     /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable),
     /// use [`sync_scrollable_active_match`](Self::sync_scrollable_active_match)
     /// instead (see the `scroll` example).
+    #[cfg(feature = "regex")]
     pub fn sync_active_match(&mut self, id: &Id, user_scrolled: bool) {
         let search_cache = &mut viewer_cache(self, id).search_cache;
 
@@ -1411,6 +1466,7 @@ impl CommonMarkCache {
     /// scroll is still animating.  This fires on every animation frame
     /// (not just the key-press frame), so even large `PageDown` jumps
     /// settle to the correct match once the animation completes.
+    #[cfg(feature = "regex")]
     pub fn sync_scrollable_active_match(
         &mut self,
         id: &Id,
@@ -1422,9 +1478,9 @@ impl CommonMarkCache {
             return;
         }
 
-        // Call viewer_cache once and split the struct fields to avoid a double
-        // mutable borrow of `self` (search_cache lives inside the same ViewerCache
-        // as split_points).
+        // Call `viewer_cache` once and split the struct fields to avoid a
+        // double mutable borrow of `self` (`search_cache` lives inside the
+        // same `ViewerCache` as split_points`).
         let vc = viewer_cache(self, id);
         let search_cache = &mut vc.search_cache;
 
@@ -1444,7 +1500,7 @@ impl CommonMarkCache {
             let idx = search_cache
                 .search_ranges
                 .partition_point(|r| r.start < current_offset);
-            // idx is the number of matches whose start byte is strictly before
+            // `idx` is the number of matches whose start byte is strictly before
             // the viewport. The last such match (idx-1) is the one the user
             // has most recently scrolled past. At the document top idx == 0
             // (nothing yet passed), so the nearest match is the first one (0),
@@ -1454,8 +1510,8 @@ impl CommonMarkCache {
             if search_cache.active_match != Some(nearest) {
                 // Only move away from the active match if it has scrolled out
                 // of the viewport. Matches rendered in the current slice have
-                // their exact pixel Y in search_match_virtual_ys; those outside
-                // the slice carry the NEG_INFINITY sentinel, which is always
+                // their exact pixel Y in `search_match_virtual_ys`; those outside
+                // the slice carry the `NEG_INFINITY` sentinel, which is always
                 // < any real viewport top (>= 0) and is therefore not-in-viewport.
                 let active_y = search_cache
                     .active_match
@@ -1467,7 +1523,7 @@ impl CommonMarkCache {
                 if !in_viewport {
                     search_cache.active_match = Some(nearest);
                     search_cache.sync_active_search_range();
-                    // Do NOT call scroll_to_active_search_match here: the
+                    // Do NOT call `scroll_to_active_search_match` here: the
                     // viewport is already where the user put it.
                 }
             }
@@ -1480,6 +1536,7 @@ impl CommonMarkCache {
     }
 }
 
+#[cfg(feature = "regex")]
 /// Builds the compiled search regex from the current query and options in
 /// `search_cache`, updating `search_regex_error` as a side-effect.
 ///

@@ -1,3 +1,4 @@
+#[cfg(feature = "regex")]
 use crate::SearchOptions;
 use crate::alerts::*;
 use egui::{Pos2, Vec2};
@@ -26,6 +27,7 @@ pub struct SplitPoint {
     pub src_span: Range<usize>,
 }
 
+#[cfg(feature = "regex")]
 #[derive(Debug, Default)]
 pub struct SearchCache {
     /// The alert bundle used to detect alert markers in blockquotes so that
@@ -86,6 +88,7 @@ pub struct SearchCache {
     pub last_viewport_height: f32,
 }
 
+#[cfg(feature = "regex")]
 impl SearchCache {
     /// Approximate the virtual Y (content-relative; 0 = document top) of a
     /// byte offset in the source text, using the split points collected
@@ -334,6 +337,7 @@ pub struct ViewerCache {
     pub pending_scroll_delta: egui::Vec2,
     /// The ID of the heading to scroll to. This is set when a link whose destination is a fragment (e.g. `#my-heading`) has been clicked.
     scroll_to_id_target: Option<String>,
+    #[cfg(feature = "regex")]
     pub search_cache: SearchCache,
 }
 

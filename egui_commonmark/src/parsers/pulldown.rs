@@ -4,12 +4,15 @@ use std::ops::Range;
 
 use crate::{CommonMarkCache, CommonMarkOptions};
 
-use egui::{self, Id, Pos2, RichText, TextStyle, Ui};
+#[cfg(feature = "regex")]
+use egui::RichText;
+use egui::{self, Id, Pos2, TextStyle, Ui};
 
 use crate::List;
 use egui_commonmark_backend::elements::*;
 use egui_commonmark_backend::misc::*;
 use egui_commonmark_backend::pulldown::*;
+#[cfg(feature = "regex")]
 use egui_commonmark_backend::search::search_intervals;
 use pulldown_cmark::{CowStr, HeadingLevel};
 
@@ -204,13 +207,16 @@ impl CommonMarkViewerInternal {
         // rebuild frames (when record_id is Some). On steady-state frames
         // record_id is None (split points are cached) but the user may have
         // just pressed Next/Prev, so we must still honour the request.
-        let scroll_source_id = split_points_id.or(options.source_id);
-        self.want_scroll_to_active_match = scroll_source_id.is_some_and(|id| {
-            viewer_cache(cache, &id)
-                .search_cache
-                .take_pending_scroll_to_active_match()
-        });
-        self.search_match_ys_scratch.clear();
+        #[cfg(feature = "regex")]
+        {
+            let scroll_source_id = split_points_id.or(options.source_id);
+            self.want_scroll_to_active_match = scroll_source_id.is_some_and(|id| {
+                viewer_cache(cache, &id)
+                    .search_cache
+                    .take_pending_scroll_to_active_match()
+            });
+            self.search_match_ys_scratch.clear();
+        }
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
         let re = ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
@@ -244,17 +250,20 @@ impl CommonMarkViewerInternal {
                 // Non-scrollable show() path: flush the per-match virtual-y positions
                 // and the current viewport top so that callers can sync the active
                 // match after the user scrolls.
-                let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
-                let viewport_height = ui.clip_rect().height();
-                let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
-                vc.search_cache.update_show_viewport(
-                    self.search_match_ys_scratch.drain(..),
-                    viewport_top_y,
-                    viewport_height,
-                );
-                // For show_with_id: keep the ViewerCache's viewport position in sync
-                // so that `viewport_start_byte_offset` returns the current scroll location.
-                vc.search_cache.last_viewport_top_y = viewport_top_y;
+                #[cfg(feature = "regex")]
+                {
+                    let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
+                    let viewport_height = ui.clip_rect().height();
+                    let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                    vc.search_cache.update_show_viewport(
+                        self.search_match_ys_scratch.drain(..),
+                        viewport_top_y,
+                        viewport_height,
+                    );
+                    // For show_with_id: keep the ViewerCache's viewport position in sync
+                    // so that `viewport_start_byte_offset` returns the current scroll location.
+                    vc.search_cache.last_viewport_top_y = viewport_top_y;
+                }
             }
         });
 
@@ -406,6 +415,7 @@ impl CommonMarkViewerInternal {
                 .show(ui, |ui| {
                     // Capture viewport top before content is placed; `clip_rect`
                     // already reflects the current scroll position.
+                    #[cfg(feature = "regex")]
                     let viewport_top_y = ui.clip_rect().min.y - ui.next_widget_position().y;
                     let vc = viewer_cache(cache, &source_id);
                     apply_pending_scroll_delta(vc, ui);
@@ -418,9 +428,12 @@ impl CommonMarkViewerInternal {
                         viewer_cache(cache, &source_id).page_size = None;
                     }
                     // Keep last_viewport_top_y in sync for viewport_start_byte_offset.
-                    viewer_cache(cache, &source_id)
-                        .search_cache
-                        .last_viewport_top_y = viewport_top_y;
+                    #[cfg(feature = "regex")]
+                    {
+                        viewer_cache(cache, &source_id)
+                            .search_cache
+                            .last_viewport_top_y = viewport_top_y;
+                    }
                 });
             return;
         }
@@ -448,9 +461,12 @@ impl CommonMarkViewerInternal {
         // (below) provides a cheap blind scroll toward its approximate
         // position using data already collected by the last full render —
         // this never requires re-rendering the whole document.
-        self.want_scroll_to_active_match = viewer_cache(cache, &source_id)
-            .search_cache
-            .take_pending_scroll_to_active_match();
+        #[cfg(feature = "regex")]
+        {
+            self.want_scroll_to_active_match = viewer_cache(cache, &source_id)
+                .search_cache
+                .take_pending_scroll_to_active_match();
+        }
 
         let events = pulldown_cmark::Parser::new_ext(
             text,
@@ -497,6 +513,7 @@ impl CommonMarkViewerInternal {
         // into owned/copied values above. `cache` now has no long-lived borrows, so
         // the closures below can capture it directly and also call viewer_cache()
         // inside short-lived scopes.
+        #[cfg(feature = "regex")]
         let pending_match_scroll_y: Option<f32> = if self.want_scroll_to_active_match {
             let vc = viewer_cache(cache, &source_id);
             let search_cache = &vc.search_cache;
@@ -517,7 +534,6 @@ impl CommonMarkViewerInternal {
         } else {
             None
         };
-
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             // Elements have different widths, so the scroll area cannot try to shrink to the
@@ -535,6 +551,7 @@ impl CommonMarkViewerInternal {
                     );
                     ui.scroll_to_rect(r, Some(egui::Align::TOP));
                 }
+                #[cfg(feature = "regex")]
                 if let Some(y) = pending_match_scroll_y
                     && (y < viewport.min.y || y > viewport.max.y)
                 {
@@ -580,9 +597,12 @@ impl CommonMarkViewerInternal {
                     let render_below = viewport.max.y + viewport_height;
                     let (skip_height, skip_count, take_count) = {
                         let vc = viewer_cache(cache, &source_id);
-                        let search_cache = &mut vc.search_cache;
-                        search_cache.last_viewport_top_y = viewport.min.y;
-                        search_cache.last_viewport_height = viewport_height;
+                        #[cfg(feature = "regex")]
+                        {
+                            let search_cache = &mut vc.search_cache;
+                            search_cache.last_viewport_top_y = viewport.min.y;
+                            search_cache.last_viewport_height = viewport_height;
+                        }
                         let preceding_split = vc
                             .split_points
                             .iter()
@@ -698,6 +718,7 @@ impl CommonMarkViewerInternal {
                             // `event_text` into the cache, exactly as the non-scrollable
                             // show() path does. Skipped on discarded frames (blind scroll
                             // toward an off-screen match) since no widgets rendered.
+                            #[cfg(feature = "regex")]
                             vc.search_cache.update_show_viewport(
                                 self.search_match_ys_scratch.drain(..),
                                 viewport.min.y,
@@ -727,6 +748,7 @@ impl CommonMarkViewerInternal {
         // (e.g. a document with no top-level paragraphs/headings/code
         // blocks), which is the same data a full render would need to
         // populate anyway.
+        #[cfg(feature = "regex")]
         if self.want_scroll_to_active_match {
             let vc = viewer_cache(cache, &source_id);
             if vc.search_cache.retry_scroll_to_active_match() {
@@ -889,6 +911,7 @@ impl CommonMarkViewerInternal {
             // (e.g. `[!NOTE]`) in the source; `update_search_matches` uses the same
             // range as the anchor for title matches, so the renderer can identify
             // them here and apply `label_with_search_highlight` to the title label.
+            #[cfg(feature = "regex")]
             let identifier_src_range: Range<usize> = collected_events
                 .iter()
                 .find(|(e, _)| matches!(e, pulldown_cmark::Event::Text(_)))
@@ -896,6 +919,7 @@ impl CommonMarkViewerInternal {
                 .unwrap_or(0..0);
 
             if let Some(alert) = parse_alerts(&options.alerts, &mut collected_events) {
+                #[cfg(feature = "regex")]
                 let ident_src = identifier_src_range;
 
                 blockquote(ui, alert.accent_color, |ui| {
@@ -907,6 +931,7 @@ impl CommonMarkViewerInternal {
                     // query matched `identifier_rendered` (e.g. "Note" for `[!NOTE]`).
                     // `update_search_matches` stored the keyword's source bytes as the
                     // match range, so we check overlap with `ident_src` to decide.
+                    #[cfg(feature = "regex")]
                     let (has_title_match, is_title_active, title_global_idx) = {
                         let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
                         let search_cache = &vc.search_cache;
@@ -930,28 +955,37 @@ impl CommonMarkViewerInternal {
                         };
                         (has_match, is_active, global_idx)
                     }; // all immutable borrows of cache released here
+                    #[cfg(not(feature = "regex"))]
+                    let (has_title_match, _is_title_active, _title_global_idx): (
+                        bool,
+                        bool,
+                        Option<usize>,
+                    ) = (false, false, None);
 
                     if has_title_match {
-                        let title_len = alert.identifier_rendered.len();
-                        let intervals = vec![(0..title_len, is_title_active)];
-                        let (_, active_rect, all_rects) = label_with_search_highlight(
-                            ui,
-                            RichText::new(&alert.identifier_rendered).color(alert.accent_color),
-                            &intervals,
-                            options.search_match_bg(ui),
-                            options.search_active_match_bg(ui),
-                        );
-                        if let Some(idx) = title_global_idx
-                            && let Some(Some(rect)) = all_rects.first()
+                        #[cfg(feature = "regex")]
                         {
-                            self.search_match_ys_scratch
-                                .push((idx, rect.min.y - self.content_origin_y));
-                        }
-                        if self.want_scroll_to_active_match
-                            && let Some(rect) = active_rect
-                        {
-                            ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                            self.want_scroll_to_active_match = false;
+                            let title_len = alert.identifier_rendered.len();
+                            let intervals = vec![(0..title_len, is_title_active)];
+                            let (_, active_rect, all_rects) = label_with_search_highlight(
+                                ui,
+                                RichText::new(&alert.identifier_rendered).color(alert.accent_color),
+                                &intervals,
+                                options.search_match_bg(ui),
+                                options.search_active_match_bg(ui),
+                            );
+                            if let Some(idx) = title_global_idx
+                                && let Some(Some(rect)) = all_rects.first()
+                            {
+                                self.search_match_ys_scratch
+                                    .push((idx, rect.min.y - self.content_origin_y));
+                            }
+                            if self.want_scroll_to_active_match
+                                && let Some(rect) = active_rect
+                            {
+                                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                                self.want_scroll_to_active_match = false;
+                            }
                         }
                     } else {
                         ui.colored_label(alert.accent_color, &alert.identifier_rendered);
@@ -1004,7 +1038,9 @@ impl CommonMarkViewerInternal {
             // preventing the outer vertical scroll area from bringing the row into
             // view.  Snapshot the scroll-request state before the table renders;
             // if the table consumed it we re-issue on the outer `ui` afterwards.
+            #[cfg(feature = "regex")]
             let want_scroll_before = self.want_scroll_to_active_match;
+            #[cfg(feature = "regex")]
             let scratch_start = self.search_match_ys_scratch.len();
 
             egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -1066,6 +1102,7 @@ impl CommonMarkViewerInternal {
             // horizontal scroll area (see comment above).  Re-issue it on the
             // outer `ui` using the virtual Y we recorded during the table render
             // so the outer vertical scroll area can bring the row into view.
+            #[cfg(feature = "regex")]
             if want_scroll_before
                 && !self.want_scroll_to_active_match
                 && let Some(active_idx) = viewer_cache(cache, &id).search_cache.active_match()
@@ -1164,6 +1201,7 @@ impl CommonMarkViewerInternal {
         }
     }
 
+    #[cfg_attr(not(feature = "regex"), allow(unused_variables))]
     fn event_text(
         &mut self,
         text: CowStr,
@@ -1179,59 +1217,64 @@ impl CommonMarkViewerInternal {
         } else if let Some(link) = &mut self.link {
             link.push_text(self.text_style.to_richtext(ui, &text), src_span);
         } else {
-            let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
-            let search_cache = &mut vc.search_cache;
-
             let rich_text = self.text_style.to_richtext(ui, &text);
-            let ranges = search_cache.search_ranges();
-            if ranges.is_empty() {
-                ui.label(rich_text);
+            #[cfg(feature = "regex")]
+            {
+                let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                let search_cache = &mut vc.search_cache;
+                let ranges = search_cache.search_ranges();
+                if ranges.is_empty() {
+                    ui.label(rich_text);
+                    return;
+                }
+
+                let intervals = search_intervals(
+                    ranges,
+                    search_cache.active_search_range(),
+                    &src_span,
+                    text.len(),
+                );
+                let (_, active_rect, all_rects) = label_with_search_highlight(
+                    ui,
+                    rich_text,
+                    &intervals,
+                    options.search_match_bg(ui),
+                    options.search_active_match_bg(ui),
+                );
+
+                // Record the virtual-y (scroll-independent) position for each
+                // global match that falls in this text run. `global_match_indices[j]`
+                // corresponds to `intervals[j]` and `all_rects[j]`: both iterate
+                // search_ranges in document order with the same filter, so the
+                // j-th surviving entry is the same match in both.
+                let content_origin_y = self.content_origin_y;
+                let global_match_indices: Vec<usize> = search_cache
+                    .search_ranges()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        r.start < r.end && r.start < src_span.end && r.end > src_span.start
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+
+                for (global_idx, maybe_rect) in global_match_indices.iter().zip(all_rects.iter()) {
+                    if let Some(rect) = maybe_rect {
+                        self.search_match_ys_scratch
+                            .push((*global_idx, rect.min.y - content_origin_y));
+                    }
+                }
+
+                if self.want_scroll_to_active_match
+                    && let Some(rect) = active_rect
+                {
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    self.want_scroll_to_active_match = false;
+                }
                 return;
             }
-
-            let intervals = search_intervals(
-                ranges,
-                search_cache.active_search_range(),
-                &src_span,
-                text.len(),
-            );
-            let (_, active_rect, all_rects) = label_with_search_highlight(
-                ui,
-                rich_text,
-                &intervals,
-                options.search_match_bg(ui),
-                options.search_active_match_bg(ui),
-            );
-
-            // Record the virtual-y (scroll-independent) position for each
-            // global match that falls in this text run. `global_match_indices[j]`
-            // corresponds to `intervals[j]` and `all_rects[j]`: both iterate
-            // search_ranges in document order with the same filter, so the
-            // j-th surviving entry is the same match in both.
-            let content_origin_y = self.content_origin_y;
-            let global_match_indices: Vec<usize> = search_cache
-                .search_ranges()
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| {
-                    r.start < r.end && r.start < src_span.end && r.end > src_span.start
-                })
-                .map(|(i, _)| i)
-                .collect();
-
-            for (global_idx, maybe_rect) in global_match_indices.iter().zip(all_rects.iter()) {
-                if let Some(rect) = maybe_rect {
-                    self.search_match_ys_scratch
-                        .push((*global_idx, rect.min.y - content_origin_y));
-                }
-            }
-
-            if self.want_scroll_to_active_match
-                && let Some(rect) = active_rect
-            {
-                ui.scroll_to_rect(rect, Some(egui::Align::Center));
-                self.want_scroll_to_active_match = false;
-            }
+            #[cfg(not(feature = "regex"))]
+            ui.label(rich_text);
         }
     }
 
@@ -1498,10 +1541,14 @@ impl CommonMarkViewerInternal {
                 self.want_scroll_to_active_match,
                 self.content_origin_y,
             );
+            #[cfg(feature = "regex")]
             if scrolled {
                 self.want_scroll_to_active_match = false;
             }
+            #[cfg(feature = "regex")]
             self.search_match_ys_scratch.extend(match_ys);
+            #[cfg(not(feature = "regex"))]
+            let _ = (scrolled, match_ys);
             if self.line.should_end_newline_forced {
                 newline(ui);
             }
@@ -1516,7 +1563,7 @@ fn apply_pending_scroll_delta(vc: &mut ViewerCache, ui: &Ui) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "regex"))]
 mod perf_tests {
     use egui::Id;
 
