@@ -238,11 +238,7 @@ impl SearchCache {
     /// Returns `None` if nothing has been rendered for `source_id` yet, or
     /// if it was rendered with [`viewport_cache`](crate::CommonMarkViewer::viewport_cache)
     /// disabled (in which case the whole document is visible-ish anyway).
-    pub fn viewport_start_byte_offset(
-        &self,
-        split_points: &Vec<SplitPoint>,
-        // source_id: impl egui::AsId,
-    ) -> Option<usize> {
+    pub fn viewport_start_byte_offset(&self, split_points: &Vec<SplitPoint>) -> Option<usize> {
         self.byte_offset_for_virtual_y(split_points, self.last_viewport_top_y)
     }
 

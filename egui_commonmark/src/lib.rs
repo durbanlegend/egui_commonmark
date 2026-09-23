@@ -72,7 +72,7 @@
 #![cfg_attr(feature = "document-features", doc = "# Features")]
 #![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
 
-use egui::{self, Id};
+use egui;
 
 mod parsers;
 
@@ -304,12 +304,12 @@ impl<'f> CommonMarkViewer<'f> {
     /// visible slice each frame.
     pub fn show_with_id(
         mut self,
-        source_id: impl egui::AsId,
+        id: egui::Id,
         ui: &mut egui::Ui,
         cache: &mut CommonMarkCache,
         text: &str,
     ) -> egui::InnerResponse<()> {
-        self.options.source_id = Some(egui::Id::new(source_id));
+        self.options.source_id = Some(id);
         self.show(ui, cache, text)
     }
 
@@ -357,15 +357,13 @@ impl<'f> CommonMarkViewer<'f> {
     #[cfg(feature = "pulldown_cmark")]
     pub fn show_scrollable(
         mut self,
-        source_id: impl egui::AsId,
+        id: egui::Id,
         ui: &mut egui::Ui,
         cache: &mut CommonMarkCache,
         text: &str,
     ) {
-        let id = Id::new(source_id);
-        // Propagate the source_id into options so that event_text, blockquote,
-        // and start_tag all look up the correct ScrollableCache entry, matching
-        // what show_with_id already does for the non-scrollable path.
+        // Propagate id into options so that event_text, blockquote, and
+        // start_tag all look up the correct ScrollableCache entry.
         self.options.source_id = Some(id);
         egui_commonmark_backend::prepare_show(cache, ui.ctx());
         parsers::pulldown::CommonMarkViewerInternal::new().show_scrollable(

@@ -7,7 +7,7 @@ use egui::{Id, RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::pulldown::{ScrollableCache, SearchCache};
+use crate::pulldown::ScrollableCache;
 
 #[cfg(feature = "better_syntax_highlighting")]
 use syntect::{
@@ -1320,6 +1320,38 @@ impl CommonMarkCache {
         &mut scroll_cache(self, id).search_cache
     }
 
+    /// The current set of search-match byte ranges for this viewer, or an
+    /// empty slice if no search has been run yet.
+    pub fn search_ranges(&self, id: &Id) -> &[Range<usize>] {
+        self.scroll
+            .get(id)
+            .map(|sc| sc.search_cache.search_ranges())
+            .unwrap_or_default()
+    }
+
+    /// The zero-based ordinal of the currently active (focused) search match,
+    /// or `None` if there is no active match.
+    pub fn active_match(&self, id: &Id) -> Option<usize> {
+        self.scroll.get(id)?.search_cache.active_match()
+    }
+
+    /// Advance the active match by `delta` steps (negative = backwards),
+    /// wrapping around. Does nothing if there are no matches.
+    pub fn go_to_match(&mut self, id: &Id, delta: isize) {
+        scroll_cache(self, id).search_cache.go_to_match(delta);
+    }
+
+    /// Mutable access to the search query string for this viewer, suitable
+    /// for binding directly to a [`egui::TextEdit`].
+    pub fn search_query_mut(&mut self, id: &Id) -> &mut String {
+        &mut scroll_cache(self, id).search_cache.search_query
+    }
+
+    /// Mutable access to the search options bitflags for this viewer.
+    pub fn search_options_mut(&mut self, id: &Id) -> &mut SearchOptions {
+        &mut scroll_cache(self, id).search_cache.search_options
+    }
+
     /// Synchronises the active search match to the current scroll position
     /// for documents displayed with [`show`](crate::CommonMarkViewer::show).
     ///
@@ -1479,10 +1511,6 @@ pub fn scroll_cache<'a>(cache: &'a mut CommonMarkCache, id: &Id) -> &'a mut Scro
         cache.scroll.insert(*id, Default::default());
     }
     cache.scroll.get_mut(id).unwrap()
-}
-
-pub fn search_cache<'a>(cache: &'a mut CommonMarkCache, id: &Id) -> &'a mut SearchCache {
-    &mut scroll_cache(cache, id).search_cache
 }
 
 /// Should be called before any rendering

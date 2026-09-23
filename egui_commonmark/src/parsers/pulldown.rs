@@ -1518,16 +1518,15 @@ fn apply_pending_scroll_delta(scroll_cache: &mut ScrollableCache, ui: &Ui) {
 
 #[cfg(test)]
 mod perf_tests {
-    use egui::{AsId, Id};
+    use egui::Id;
 
     use super::*;
     use crate::{CommonMarkCache, CommonMarkViewer};
 
-    /// Returns the number of full-document renders recorded for `source_id`
+    /// Returns the number of full-document renders recorded for `id`
     /// since the process started (or since the entry was first created). Each
-    /// `source_id` has its own counter, so parallel tests do not interfere.
-    fn full_render_count_for(source_id: impl AsId) -> usize {
-        let id = Id::new(source_id);
+    /// `id` has its own counter, so parallel tests do not interfere.
+    fn full_render_count_for(id: Id) -> usize {
         *FULL_RENDER_COUNTS.lock().unwrap().get(&id).unwrap_or(&0)
     }
 
@@ -1583,7 +1582,7 @@ mod perf_tests {
             ui.set_min_height(600.0);
             CommonMarkViewer::new()
                 .viewport_cache(true)
-                .show_scrollable(source_id_str, ui, &mut cache, &doc);
+                .show_scrollable(source_id, ui, &mut cache, &doc);
         });
         output.drop_without_applying_deltas();
 
@@ -1639,13 +1638,17 @@ mod perf_tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(egui::FontDefinitions::default());
 
+        // The viewer uses its own cache entry (distinct from the search setup
+        // above) so this test exercises viewport caching independently.
+        let viewer_id = Id::new("perf_test_offscreen_jump");
+
         // Frame 0: cold render at the top of the document, populates
         // page_size/split_points.
         let output = ctx.run_ui(windowed_input(), |ui| {
             ui.set_min_height(600.0);
             CommonMarkViewer::new()
                 .viewport_cache(true)
-                .show_scrollable("perf_test_offscreen_jump", ui, &mut cache, &doc);
+                .show_scrollable(viewer_id, ui, &mut cache, &doc);
         });
         output.drop_without_applying_deltas();
 
@@ -1653,7 +1656,7 @@ mod perf_tests {
         search_cache.set_active_search_range(Some(target));
         search_cache.scroll_to_active_search_match();
 
-        let before = full_render_count_for("perf_test_offscreen_jump");
+        let before = full_render_count_for(viewer_id);
         let mut worst = std::time::Duration::ZERO;
         for _ in 0..10 {
             let frame_start = std::time::Instant::now();
@@ -1661,12 +1664,12 @@ mod perf_tests {
                 ui.set_min_height(600.0);
                 CommonMarkViewer::new()
                     .viewport_cache(true)
-                    .show_scrollable("perf_test_offscreen_jump", ui, &mut cache, &doc);
+                    .show_scrollable(viewer_id, ui, &mut cache, &doc);
             });
             output.drop_without_applying_deltas();
             worst = worst.max(frame_start.elapsed());
         }
-        let delta = full_render_count_for("perf_test_offscreen_jump") - before;
+        let delta = full_render_count_for(viewer_id) - before;
 
         assert_eq!(
             delta, 0,
@@ -1712,19 +1715,20 @@ mod perf_tests {
         // Each test uses its own `source_id`, so `full_render_count_for()` is
         // keyed per source and cannot be polluted by other tests running in
         // parallel.
-        let before = full_render_count_for("perf_test_doc");
+        let viewer_id = Id::new("perf_test_doc");
+        let before = full_render_count_for(viewer_id);
         const FRAMES: usize = 5;
         for _ in 0..FRAMES {
             let output = ctx.run_ui(windowed_input(), |ui| {
                 ui.set_min_height(600.0);
                 CommonMarkViewer::new()
                     .viewport_cache(true)
-                    .show_scrollable("perf_test_doc", ui, &mut cache, &doc);
+                    .show_scrollable(viewer_id, ui, &mut cache, &doc);
             });
             output.drop_without_applying_deltas();
         }
 
-        let delta = full_render_count_for("perf_test_doc") - before;
+        let delta = full_render_count_for(viewer_id) - before;
         assert!(
             delta <= 1,
             "expected at most 1 full render across {FRAMES} steady-state frames, got {delta}"
