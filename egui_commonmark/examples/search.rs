@@ -10,6 +10,11 @@ use eframe::egui;
 use egui::Color32;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer, SearchOptions};
 
+/// Salt used to derive a stable, context-scoped [`egui::Id`] for this viewer
+/// via [`egui::Ui::make_persistent_id`]. Defined here so it is named in one
+/// place rather than repeated as a magic string.
+const VIEWER_ID_SALT: &str = "search_example";
+
 const INTRO: &str = r#"# Search Highlighting
 
 Type text in the search bar above to highlight every occurrence in this document.
@@ -47,16 +52,17 @@ Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor i
 
 struct App {
     cache: CommonMarkCache,
-    /// Stable [`egui::Id`] identifying this viewer's cache entry.
-    /// Created once from a string constant; passed directly to all cache
-    /// methods and show methods.
-    id: egui::Id,
     content: String,
 }
 
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.set_min_height(512.0);
+
+        // Derive the viewer Id from the Ui context each frame. This scopes it
+        // to the widget hierarchy (emilk's preferred pattern) and avoids
+        // global hash collisions. Stable as long as the widget tree is stable.
+        let id = ui.make_persistent_id(VIEWER_ID_SALT);
 
         let (cmd_f, search_escape) = ui.ctx().input(|i| {
             use egui::Key;
@@ -68,7 +74,7 @@ impl eframe::App for App {
 
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
-                let text_color = if self.cache.search_regex_error(&self.id).is_some() {
+                let text_color = if self.cache.search_regex_error(&id).is_some() {
                     ui.visuals().error_fg_color
                 } else {
                     ui.visuals().text_color()
@@ -76,18 +82,18 @@ impl eframe::App for App {
 
                 ui.label("Search:");
                 let response = ui.add(
-                    egui::TextEdit::singleline(self.cache.search_query_mut(&self.id))
+                    egui::TextEdit::singleline(self.cache.search_query_mut(&id))
                         .text_color(text_color),
                 );
-                if let Some(error) = &self.cache.search_regex_error(&self.id) {
+                if let Some(error) = &self.cache.search_regex_error(&id) {
                     response.clone().on_hover_text(error);
                 }
 
                 // Lay out and test search options
-                let search_options_changed = self.search_options_changed(ui);
+                let search_options_changed = self.search_options_changed(ui, id);
 
                 if search_options_changed || response.changed() {
-                    self.cache.update_search_matches(&self.id, &self.content);
+                    self.cache.update_search_matches(&id, &self.content);
                 }
 
                 let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -105,8 +111,8 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self.cache.search_ranges(&self.id).len();
-                ui.label(match self.cache.active_match(&self.id) {
+                let match_count = self.cache.search_ranges(&id).len();
+                ui.label(match self.cache.active_match(&id) {
                     Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
                     _ => format!("0/{match_count}"),
                 });
@@ -114,12 +120,12 @@ impl eframe::App for App {
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.go_to_match(&self.id, -1);
+                    self.cache.go_to_match(&id, -1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.go_to_match(&self.id, 1);
+                    self.cache.go_to_match(&id, 1);
                 }
             });
         });
@@ -130,7 +136,7 @@ impl eframe::App for App {
             ui.style_mut().url_in_tooltip = true;
 
             // Handle any keyboard scrolling requests
-            let user_scrolled = self.cache.handle_keyboard_scrolling(&self.id, ui);
+            let user_scrolled = self.cache.handle_keyboard_scrolling(&id, ui);
 
             ui.separator();
 
@@ -147,13 +153,13 @@ impl eframe::App for App {
             // and then call `self.cache.sync_active_match`.
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // Scroll by accumulated scroll amount before rendering
-                self.cache.apply_pending_scroll_delta(&self.id, ui);
+                self.cache.apply_pending_scroll_delta(&id, ui);
                 CommonMarkViewer::new()
                     // Optionally override default search match colors
                     .search_active_match_color(active_bg)
                     .search_match_color(match_bg)
                     .enable_scroll_to_heading(true)
-                    .show_with_id(self.id, ui, &mut self.cache, &self.content);
+                    .show_with_id(id, ui, &mut self.cache, &self.content);
             });
 
             // Optionally anchor any current or new search to the current viewport so that
@@ -162,15 +168,14 @@ impl eframe::App for App {
             // without this call they will start from the top of the document.
             // When using `CommonMarkViewer::show_with_id`, new searches will always be
             // anchored to the current viewport anyway, thanks to the id stored in the cache.
-            self.cache.sync_active_match(&self.id, user_scrolled);
+            self.cache.sync_active_match(&id, user_scrolled);
         });
     }
 }
 
 impl App {
     // Lays out the search option buttons and checks if they've changed from frame to frame.
-    fn search_options_changed(&mut self, ui: &mut egui::Ui) -> bool {
-        let id = self.id;
+    fn search_options_changed(&mut self, ui: &mut egui::Ui, id: egui::Id) -> bool {
         let mut search_options_changed = false;
 
         let mut search_toggle =
@@ -286,7 +291,6 @@ Syntax highlighting inside code blocks with [`syntect`](https://crates.io/crates
             }
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
-                id: egui::Id::new("search_example"),
                 content,
             }))
         }),

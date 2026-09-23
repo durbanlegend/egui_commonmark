@@ -11,11 +11,13 @@ use std::env;
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
+/// Salt used to derive a stable, context-scoped [`egui::Id`] for this viewer
+/// via [`egui::Ui::make_persistent_id`]. Defined here so it is named in one
+/// place rather than repeated as a magic string.
+const VIEWER_ID_SALT: &str = "scroll_example";
+
 struct App {
     cache: CommonMarkCache,
-    /// Stable [`egui::Id`] identifying this viewer's cache entry.
-    /// Created once at startup; passed directly to all cache and show methods.
-    id: egui::Id,
     viewport_cache: bool,
     content: String,
 }
@@ -26,12 +28,17 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.set_min_height(512.0);
 
+        // Derive the viewer Id from the Ui context each frame. This scopes it
+        // to the widget hierarchy (emilk's preferred pattern) and avoids
+        // global hash collisions. Stable as long as the widget tree is stable.
+        let id = ui.make_persistent_id(VIEWER_ID_SALT);
+
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                let response = ui.text_edit_singleline(self.cache.search_query_mut(&self.id));
+                let response = ui.text_edit_singleline(self.cache.search_query_mut(&id));
                 if response.changed() {
-                    self.cache.update_search_matches(&self.id, &self.content);
+                    self.cache.update_search_matches(&id, &self.content);
                 }
                 // Re-request focus so that repeated Enter presses keep working without having to
                 // click back into the box each time.
@@ -40,8 +47,8 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self.cache.search_ranges(&self.id).len();
-                ui.label(match self.cache.active_match(&self.id) {
+                let match_count = self.cache.search_ranges(&id).len();
+                ui.label(match self.cache.active_match(&id) {
                     Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
                     _ => format!("0/{match_count}"),
                 });
@@ -49,12 +56,12 @@ impl eframe::App for App {
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.go_to_match(&self.id, -1);
+                    self.cache.go_to_match(&id, -1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.go_to_match(&self.id, 1);
+                    self.cache.go_to_match(&id, 1);
                 }
             });
         });
@@ -63,7 +70,7 @@ impl eframe::App for App {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
             // Handle any keyboard scrolling requests.
-            let user_scrolled = self.cache.handle_keyboard_scrolling(&self.id, ui);
+            let user_scrolled = self.cache.handle_keyboard_scrolling(&id, ui);
 
             // `show_scrollable` will automatically scroll by any accumulated scroll amount
             // before rendering
@@ -71,14 +78,14 @@ impl eframe::App for App {
                 .max_image_width(Some(512))
                 .enable_scroll_to_heading(true)
                 .viewport_cache(self.viewport_cache)
-                .show_scrollable(self.id, ui, &mut self.cache, &self.content);
+                .show_scrollable(id, ui, &mut self.cache, &self.content);
 
             // Optionally anchor any current search to the current viewport so that Next/Previous will
             // continue from there instead of from its previous location.
             // This call does not affect new searches. In `show-scrollable` mode these will always be
             // anchored to the current viewport because the id is stored in the cache.
             self.cache
-                .sync_scrollable_active_match(&self.id, self.viewport_cache, user_scrolled);
+                .sync_scrollable_active_match(&id, self.viewport_cache, user_scrolled);
         });
     }
 }
@@ -107,7 +114,6 @@ fn main() -> eframe::Result {
             }
             Ok(Box::new(App {
                 cache: CommonMarkCache::default(),
-                id: egui::Id::new("scroll_example"),
                 viewport_cache,
                 content,
             }))
