@@ -25,15 +25,18 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         ui.set_min_height(512.0);
 
+        // Compute once per frame; pass to all cache methods as `&id`.
+        // The raw `&self.source_id` string is still passed to show_scrollable,
+        // which does its own single Id::new() wrap internally.
+        let id = egui::Id::new(&self.source_id);
+
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                let response = ui.text_edit_singleline(
-                    &mut self.cache.search_cache(&self.source_id).search_query,
-                );
+                let response =
+                    ui.text_edit_singleline(&mut self.cache.search_cache(&id).search_query);
                 if response.changed() {
-                    self.cache
-                        .update_search_matches(&self.source_id, &self.content);
+                    self.cache.update_search_matches(&id, &self.content);
                 }
                 // Re-request focus so that repeated Enter presses keep working without having to
                 // click back into the box each time.
@@ -42,27 +45,21 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self
-                    .cache
-                    .search_cache(&self.source_id)
-                    .search_ranges()
-                    .len();
-                ui.label(
-                    match self.cache.search_cache(&self.source_id).active_match() {
-                        Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
-                        _ => format!("0/{match_count}"),
-                    },
-                );
+                let match_count = self.cache.search_cache(&id).search_ranges().len();
+                ui.label(match self.cache.search_cache(&id).active_match() {
+                    Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
+                    _ => format!("0/{match_count}"),
+                });
 
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.search_cache(&self.source_id).go_to_match(-1);
+                    self.cache.search_cache(&id).go_to_match(-1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.search_cache(&self.source_id).go_to_match(1);
+                    self.cache.search_cache(&id).go_to_match(1);
                 }
             });
         });
@@ -71,7 +68,7 @@ impl eframe::App for App {
             ui.style_mut().spacing.scroll = egui::style::ScrollStyle::thin();
 
             // Handle any keyboard scrolling requests.
-            let user_scrolled = self.cache.handle_keyboard_scrolling(&self.source_id, ui);
+            let user_scrolled = self.cache.handle_keyboard_scrolling(&id, ui);
 
             // `show_scrollable` will automatically scroll by any accumulated scroll amount
             // before rendering
@@ -86,11 +83,8 @@ impl eframe::App for App {
             // This call does not affect new searches. In `show-scrollable` mode these will always be
             // anchored to the current viewport because the `egui_source_id` is passed in, whether or not
             // the relevant sync active match method is called or `viewport_cache` is enabled.
-            self.cache.sync_scrollable_active_match(
-                &self.source_id,
-                self.viewport_cache,
-                user_scrolled,
-            );
+            self.cache
+                .sync_scrollable_active_match(&id, self.viewport_cache, user_scrolled);
         });
     }
 }

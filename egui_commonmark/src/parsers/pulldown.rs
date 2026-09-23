@@ -101,7 +101,7 @@ pub struct CommonMarkViewerInternal {
     content_origin_y: f32,
     /// `(global_match_index, virtual_y)` pairs accumulated across all
     /// `event_text` calls during this render pass. Flushed into
-    /// TODO SearchCache [`CommonMarkCache`] at the end of `show()` (non-scrollable path only).
+    /// SearchCache [`CommonMarkCache`] at the end of `show()` (non-scrollable path only).
     search_match_ys_scratch: Vec<(usize, f32)>,
 }
 

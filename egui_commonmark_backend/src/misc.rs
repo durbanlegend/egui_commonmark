@@ -3,7 +3,7 @@ use crate::{
     search,
 };
 use bitflags::bitflags;
-use egui::{AsId, Id, RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
+use egui::{Id, RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -796,8 +796,7 @@ pub struct CommonMarkCache {
     // /// The ID of the heading to scroll to. This is set when a link whose destination is a fragment (e.g. `#my-heading`) has been clicked.
     // scroll_to_id_target: Option<String>,
     link_hooks: HashMap<String, bool>,
-    // TODO make private again after testing
-    pub scroll: HashMap<Id, ScrollableCache>,
+    scroll: HashMap<Id, ScrollableCache>,
     pub(self) has_installed_loaders: bool,
 }
 
@@ -865,14 +864,14 @@ impl CommonMarkCache {
     }
 
     /// Clear the cache for all scrollable elements
-    pub fn clear_viewers(&mut self) {
+    pub fn clear_scrollable(&mut self) {
         self.scroll.clear();
     }
 
     /// Clear the cache for a specific scrollable viewer. Returns false if the
     /// id was not in the cache.
-    pub fn clear_scrollable_with_id(&mut self, source_id: impl egui::AsId) -> bool {
-        self.scroll.remove(&Id::new(source_id)).is_some()
+    pub fn clear_scrollable_with_id(&mut self, id: &Id) -> bool {
+        self.scroll.remove(id).is_some()
     }
 
     /// If the user clicks on a link in the markdown render that has `name` as a link. The hook
@@ -946,7 +945,7 @@ impl CommonMarkCache {
 
     /// Handles keyboard scrolling input and updates cache delta.
     /// Returns `true` if any explicit user scrolling (wheel or keyboard) occurred.
-    pub fn handle_keyboard_scrolling(&mut self, source_id: impl egui::AsId, ui: &egui::Ui) -> bool {
+    pub fn handle_keyboard_scrolling(&mut self, id: &Id, ui: &egui::Ui) -> bool {
         let no_text_focus = !ui.ctx().egui_wants_keyboard_input();
 
         // Calculate line and page heights up front
@@ -981,7 +980,7 @@ impl CommonMarkCache {
             })
             .flatten();
 
-        let scroll_cache = scroll_cache(self, &Id::new(source_id));
+        let scroll_cache = scroll_cache(self, id);
 
         // Apply scroll delta if a key was pressed
         if let Some(delta_y) = key_scroll_delta {
@@ -1001,16 +1000,16 @@ impl CommonMarkCache {
 
     /// To apply scrolling without `show_scrollable`, call this function immediately before
     /// or after `show`.
-    pub fn apply_pending_scroll_delta(&mut self, source_id: impl egui::AsId, ui: &Ui) {
-        let scroll_cache = self.scroll.get_mut(&Id::new(source_id)).unwrap();
+    pub fn apply_pending_scroll_delta(&mut self, id: &Id, ui: &Ui) {
+        let scroll_cache = self.scroll.get_mut(id).unwrap();
         let delta = std::mem::replace(&mut scroll_cache.pending_scroll_delta, egui::Vec2::ZERO);
         if delta != egui::Vec2::ZERO {
             ui.scroll_with_delta(delta);
         }
     }
 
-    pub fn search_regex_error(&mut self, source_id: &str) -> Option<String> {
-        self.search_cache(source_id).search_regex_error.clone()
+    pub fn search_regex_error(&mut self, id: &Id) -> Option<String> {
+        self.search_cache(id).search_regex_error.clone()
     }
 
     /// Recomputes `search_ranges` from the *rendered* text only (via
@@ -1035,8 +1034,8 @@ impl CommonMarkCache {
     /// same `egui_source_id`. When using plain
     /// [`show`](crate::CommonMarkViewer::show), the search always starts from
     /// the document top.
-    pub fn update_search_matches(&mut self, source_id: &str, content: &str) {
-        let scroll_cache = scroll_cache(self, &Id::new(source_id));
+    pub fn update_search_matches(&mut self, id: &Id, content: &str) {
+        let scroll_cache = scroll_cache(self, id);
         let search_cache = &mut scroll_cache.search_cache;
 
         // Anchor to the byte position of the currently active match so that
@@ -1317,14 +1316,8 @@ impl CommonMarkCache {
         search_cache.search_scroll_protection = 30;
     }
 
-    // TODO Phase out in favour of function of same name?
-    pub fn search_cache(
-        &mut self,
-        source_id: impl egui::AsId,
-    ) -> &mut crate::pulldown::SearchCache {
-        let scroll_cache = scroll_cache(self, &Id::new(source_id));
-        let search_cache = &mut scroll_cache.search_cache;
-        search_cache
+    pub fn search_cache(&mut self, id: &Id) -> &mut crate::pulldown::SearchCache {
+        &mut scroll_cache(self, id).search_cache
     }
 
     /// Synchronises the active search match to the current scroll position
@@ -1351,9 +1344,8 @@ impl CommonMarkCache {
     /// [`show_scrollable`](crate::CommonMarkViewer::show_scrollable),
     /// use [`sync_scrollable_active_match`](Self::sync_scrollable_active_match)
     /// instead (see the `scroll` example).
-    pub fn sync_active_match(&mut self, source_id: impl AsId, user_scrolled: bool) {
-        let id = Id::new(source_id);
-        let search_cache = &mut scroll_cache(self, &id).search_cache;
+    pub fn sync_active_match(&mut self, id: &Id, user_scrolled: bool) {
+        let search_cache = &mut scroll_cache(self, id).search_cache;
 
         if user_scrolled {
             search_cache.search_scroll_protection = 0;
@@ -1414,19 +1406,19 @@ impl CommonMarkCache {
     /// settle to the correct match once the animation completes.
     pub fn sync_scrollable_active_match(
         &mut self,
-        source_id: impl AsId,
+        id: &Id,
         viewport_cache: bool,
         user_scrolled: bool,
     ) {
         if !viewport_cache {
-            self.sync_active_match(source_id, user_scrolled);
+            self.sync_active_match(id, user_scrolled);
             return;
         }
 
         // Call scroll_cache once and split the struct fields to avoid a double
         // mutable borrow of `self` (search_cache lives inside the same ScrollableCache
         // as split_points).
-        let scroll = scroll_cache(self, &Id::new(source_id));
+        let scroll = scroll_cache(self, id);
         let search_cache = &mut scroll.search_cache;
 
         if user_scrolled {

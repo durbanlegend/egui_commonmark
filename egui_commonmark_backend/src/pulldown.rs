@@ -50,14 +50,7 @@ pub struct SearchCache {
     pub active_match: Option<usize>,
     /// The y positions of the search matches, relative to the document
     pub search_match_virtual_ys: Vec<f32>,
-    // TODO confirm these are reduncant duplicates of last_viewport_top_y and pub last_viewport_height:
-    // /// The y position of the top of the last viewport, relative to the document
-    // last_viewport_top_y: f32,
-    // /// The height of the last viewport (clip rect), in the same virtual
-    // /// coordinate space as `last_viewport_top_y`. Together they form
-    // /// the interval `[top, top + height)` that defines what is on screen.
-    // last_viewport_height: f32,
-    /// The byte offset of the last viewport, relative to the document, for
+
     /// use with `show_scrollable`. Used to detect viewport movement without
     /// relying on input events.
     pub last_viewport_offset: usize,
