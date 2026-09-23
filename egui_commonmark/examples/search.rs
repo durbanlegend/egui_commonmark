@@ -76,7 +76,7 @@ impl eframe::App for App {
 
                 ui.label("Search:");
                 let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.cache.search_cache(&self.id).search_query)
+                    egui::TextEdit::singleline(self.cache.search_query_mut(&self.id))
                         .text_color(text_color),
                 );
                 if let Some(error) = &self.cache.search_regex_error(&self.id) {
@@ -105,8 +105,8 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self.cache.search_cache(&self.id).search_ranges().len();
-                ui.label(match self.cache.search_cache(&self.id).active_match() {
+                let match_count = self.cache.search_ranges(&self.id).len();
+                ui.label(match self.cache.active_match(&self.id) {
                     Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
                     _ => format!("0/{match_count}"),
                 });
@@ -114,12 +114,12 @@ impl eframe::App for App {
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.search_cache(&self.id).go_to_match(-1);
+                    self.cache.go_to_match(&self.id, -1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.search_cache(&self.id).go_to_match(1);
+                    self.cache.go_to_match(&self.id, 1);
                 }
             });
         });
@@ -175,20 +175,14 @@ impl App {
 
         let mut search_toggle =
             |ui: &mut egui::Ui, flag: SearchOptions, label: egui::WidgetText, tooltip: String| {
-                let selected = (&mut self.cache)
-                    .search_cache(&id)
-                    .search_options
-                    .contains(flag);
+                let selected = self.cache.search_options_mut(&id).contains(flag);
 
                 if ui
                     .selectable_label(selected, label)
                     .on_hover_text(tooltip)
                     .clicked()
                 {
-                    (&mut self.cache)
-                        .search_cache(&id)
-                        .search_options
-                        .toggle(flag);
+                    self.cache.search_options_mut(&id).toggle(flag);
                     search_options_changed = true;
                 }
             };

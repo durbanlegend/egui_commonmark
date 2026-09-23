@@ -29,8 +29,7 @@ impl eframe::App for App {
         egui::Panel::top("search_bar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Search:");
-                let response =
-                    ui.text_edit_singleline(&mut self.cache.search_cache(&self.id).search_query);
+                let response = ui.text_edit_singleline(self.cache.search_query_mut(&self.id));
                 if response.changed() {
                     self.cache.update_search_matches(&self.id, &self.content);
                 }
@@ -41,8 +40,8 @@ impl eframe::App for App {
                     response.request_focus();
                 }
 
-                let match_count = self.cache.search_cache(&self.id).search_ranges().len();
-                ui.label(match self.cache.search_cache(&self.id).active_match() {
+                let match_count = self.cache.search_ranges(&self.id).len();
+                ui.label(match self.cache.active_match(&self.id) {
                     Some(i) if match_count > 0 => format!("{}/{match_count}", i + 1),
                     _ => format!("0/{match_count}"),
                 });
@@ -50,12 +49,12 @@ impl eframe::App for App {
                 if ui.button("Previous").clicked()
                     || (enter_pressed && ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.search_cache(&self.id).go_to_match(-1);
+                    self.cache.go_to_match(&self.id, -1);
                 }
                 if ui.button("Next").clicked()
                     || (enter_pressed && !ui.input(|i| i.modifiers.shift))
                 {
-                    self.cache.search_cache(&self.id).go_to_match(1);
+                    self.cache.go_to_match(&self.id, 1);
                 }
             });
         });

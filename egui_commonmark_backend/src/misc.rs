@@ -1466,23 +1466,22 @@ impl CommonMarkCache {
             && search_cache.search_scroll_protection == 0
             && current_offset != search_cache.last_viewport_offset
         {
-            let len = search_cache.search_ranges.len();
             let idx = search_cache
                 .search_ranges
                 .partition_point(|r| r.start < current_offset);
-            let nearest = if idx > 0 {
-                idx - 1
-            } else {
-                len.saturating_sub(1)
-            };
+            // idx is the number of matches whose start byte is strictly before
+            // the viewport. The last such match (idx-1) is the one the user
+            // has most recently scrolled past. At the document top idx == 0
+            // (nothing yet passed), so the nearest match is the first one (0),
+            // not the last (which would be a spurious wrap-around).
+            let nearest = idx.saturating_sub(1);
 
             if search_cache.active_match != Some(nearest) {
                 // Only move away from the active match if it has scrolled out
-                // of the viewport. search_match_virtual_ys is now populated
-                // by the viewport-cache slice render (via update_show_viewport)
-                // so we can use the same check as sync_active_match: matches
-                // in the rendered slice have their exact pixel Y; those outside
-                // default to 0.0 and are treated as not-in-viewport.
+                // of the viewport. Matches rendered in the current slice have
+                // their exact pixel Y in search_match_virtual_ys; those outside
+                // the slice carry the NEG_INFINITY sentinel, which is always
+                // < any real viewport top (>= 0) and is therefore not-in-viewport.
                 let active_y = search_cache
                     .active_match
                     .and_then(|i| search_cache.search_match_virtual_ys.get(i).copied());

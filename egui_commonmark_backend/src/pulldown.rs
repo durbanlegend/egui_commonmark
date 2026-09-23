@@ -304,7 +304,12 @@ impl SearchCache {
     ) {
         let n = self.search_ranges.len();
         self.search_match_virtual_ys.clear();
-        self.search_match_virtual_ys.resize(n, 0.0);
+        // Use NEG_INFINITY as the sentinel for "not rendered in this slice".
+        // A real match Y is always >= 0 (content-relative from the document
+        // top), so NEG_INFINITY is unambiguously "not in viewport" for any
+        // viewport top >= 0, avoiding the false-positive that 0.0 caused at
+        // the document top.
+        self.search_match_virtual_ys.resize(n, f32::NEG_INFINITY);
         for (idx, y) in match_ys {
             if idx < n {
                 self.search_match_virtual_ys[idx] = y;
