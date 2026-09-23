@@ -1105,7 +1105,10 @@ impl CommonMarkViewerInternal {
             #[cfg(feature = "regex")]
             if want_scroll_before
                 && !self.want_scroll_to_active_match
-                && let Some(active_idx) = viewer_cache(cache, &id).search_cache.active_match()
+                && let Some(active_idx) =
+                    viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL))
+                        .search_cache
+                        .active_match()
             {
                 let match_virtual_y = self.search_match_ys_scratch[scratch_start..]
                     .iter()
