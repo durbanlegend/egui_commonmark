@@ -72,8 +72,6 @@
 #![cfg_attr(feature = "document-features", doc = "# Features")]
 #![cfg_attr(feature = "document-features", doc = document_features::document_features!())]
 
-use egui;
-
 mod parsers;
 
 pub use egui_commonmark_backend::RenderHtmlFn;
@@ -363,7 +361,7 @@ impl<'f> CommonMarkViewer<'f> {
         text: &str,
     ) {
         // Propagate id into options so that event_text, blockquote, and
-        // start_tag all look up the correct ScrollableCache entry.
+        // start_tag all look up the correct ViewerCache entry.
         self.options.source_id = Some(id);
         egui_commonmark_backend::prepare_show(cache, ui.ctx());
         parsers::pulldown::CommonMarkViewerInternal::new().show_scrollable(

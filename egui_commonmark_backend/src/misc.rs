@@ -7,7 +7,7 @@ use egui::{Id, RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::pulldown::ScrollableCache;
+use crate::pulldown::ViewerCache;
 
 #[cfg(feature = "better_syntax_highlighting")]
 use syntect::{
@@ -296,7 +296,7 @@ impl Link {
         }
 
         let id = options.source_id.unwrap_or(Id::NULL);
-        let search_cache = cache.search_cache(&id);
+        let search_cache = cache.search_cache_mut(&id);
         let ranges = search_cache.search_ranges();
         let (intervals, has_active_match) = if ranges.is_empty() {
             (vec![], false)
@@ -343,7 +343,7 @@ impl Link {
             let response = ui.link(layout_job);
             if response.clicked() {
                 scroll_to_heading.replace(stripped.to_string());
-            };
+            }
             response
         } else {
             ui.hyperlink_to(layout_job, destination)
@@ -471,8 +471,8 @@ impl Image {
 
         // --- Search match handling ---
         let source_id = options.source_id.unwrap_or(Id::NULL);
-        let scroll_cache = scroll_cache(cache, &source_id.into());
-        let search_cache = &mut scroll_cache.search_cache;
+        let vc = viewer_cache(cache, &source_id);
+        let search_cache = &mut vc.search_cache;
 
         let ranges = search_cache.search_ranges();
         if ranges.is_empty() || alt_src_spans.is_empty() {
@@ -568,8 +568,8 @@ impl CodeBlock {
         content_origin_y: f32,
     ) -> (bool, Vec<(usize, f32)>) {
         let intervals = {
-            let scroll_cache = scroll_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL));
-            let search_cache = &scroll_cache.search_cache;
+            let vc = viewer_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL));
+            let search_cache = &vc.search_cache;
             search::chunked_search_intervals(
                 &self.chunks,
                 search_cache.search_ranges(),
@@ -623,7 +623,7 @@ impl CodeBlock {
         // not the block top, so the in-viewport check stays correct while
         // the user scrolls through the block.
         let search_cache =
-            &scroll_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL)).search_cache;
+            &viewer_cache(cache, &options.source_id.unwrap_or(egui::Id::NULL)).search_cache;
         let match_ys: Vec<(usize, f32)> = self
             .chunks
             .iter()
@@ -796,7 +796,7 @@ pub struct CommonMarkCache {
     // /// The ID of the heading to scroll to. This is set when a link whose destination is a fragment (e.g. `#my-heading`) has been clicked.
     // scroll_to_id_target: Option<String>,
     link_hooks: HashMap<String, bool>,
-    scroll: HashMap<Id, ScrollableCache>,
+    viewers: HashMap<Id, ViewerCache>,
     pub(self) has_installed_loaders: bool,
 }
 
@@ -809,8 +809,7 @@ impl Default for CommonMarkCache {
             #[cfg(feature = "better_syntax_highlighting")]
             ts: ThemeSet::load_defaults(),
             link_hooks: HashMap::new(),
-            scroll: Default::default(),
-            // scroll_to_id_target: None,
+            viewers: HashMap::default(),
             has_installed_loaders: false,
         }
     }
@@ -863,15 +862,15 @@ impl CommonMarkCache {
         Ok(())
     }
 
-    /// Clear the cache for all scrollable elements
-    pub fn clear_scrollable(&mut self) {
-        self.scroll.clear();
+    /// Clear the cache for all viewers.
+    pub fn clear_viewers(&mut self) {
+        self.viewers.clear();
     }
 
-    /// Clear the cache for a specific scrollable viewer. Returns false if the
+    /// Clear the cache for a specific viewer. Returns false if the
     /// id was not in the cache.
-    pub fn clear_scrollable_with_id(&mut self, id: &Id) -> bool {
-        self.scroll.remove(id).is_some()
+    pub fn clear_viewer(&mut self, id: &Id) -> bool {
+        self.viewers.remove(id).is_some()
     }
 
     /// If the user clicks on a link in the markdown render that has `name` as a link. The hook
@@ -980,18 +979,18 @@ impl CommonMarkCache {
             })
             .flatten();
 
-        let scroll_cache = scroll_cache(self, id);
+        let vc = viewer_cache(self, id);
 
         // Apply scroll delta if a key was pressed
         if let Some(delta_y) = key_scroll_delta {
-            scroll_cache.set_scroll_delta(egui::vec2(0.0, delta_y));
+            vc.set_scroll_delta(egui::vec2(0.0, delta_y));
         }
 
         let user_scroll_input =
             ui.input(egui::InputState::is_scrolling) || key_scroll_delta.is_some();
 
         if user_scroll_input {
-            scroll_cache.search_cache.search_scroll_protection = 0;
+            vc.search_cache.search_scroll_protection = 0;
         }
 
         // Return combined user scroll status
@@ -1001,15 +1000,18 @@ impl CommonMarkCache {
     /// To apply scrolling without `show_scrollable`, call this function immediately before
     /// or after `show`.
     pub fn apply_pending_scroll_delta(&mut self, id: &Id, ui: &Ui) {
-        let scroll_cache = self.scroll.get_mut(id).unwrap();
-        let delta = std::mem::replace(&mut scroll_cache.pending_scroll_delta, egui::Vec2::ZERO);
+        let vc = self.viewers.get_mut(id).unwrap();
+        let delta = std::mem::replace(&mut vc.pending_scroll_delta, egui::Vec2::ZERO);
         if delta != egui::Vec2::ZERO {
             ui.scroll_with_delta(delta);
         }
     }
 
     pub fn search_regex_error(&mut self, id: &Id) -> Option<String> {
-        self.search_cache(id).search_regex_error.clone()
+        viewer_cache(self, id)
+            .search_cache
+            .search_regex_error
+            .clone()
     }
 
     /// Recomputes `search_ranges` from the *rendered* text only (via
@@ -1034,9 +1036,10 @@ impl CommonMarkCache {
     /// same `egui_source_id`. When using plain
     /// [`show`](crate::CommonMarkViewer::show), the search always starts from
     /// the document top.
+    #[allow(clippy::too_many_lines)]
     pub fn update_search_matches(&mut self, id: &Id, content: &str) {
-        let scroll_cache = scroll_cache(self, id);
-        let search_cache = &mut scroll_cache.search_cache;
+        let vc = viewer_cache(self, id);
+        let search_cache = &mut vc.search_cache;
 
         // Anchor to the byte position of the currently active match so that
         // adding/removing characters from the query stays on the same spot.
@@ -1048,41 +1051,13 @@ impl CommonMarkCache {
             .active_match
             .and_then(|i| search_cache.search_ranges.get(i))
             .map(|r| r.start)
-            .or_else(|| search_cache.viewport_start_byte_offset(&scroll_cache.split_points))
+            .or_else(|| search_cache.viewport_start_byte_offset(&vc.split_points))
             .unwrap_or(0);
 
         search_cache.search_ranges.clear();
 
-        let query = &search_cache.search_query;
-
-        if query.is_empty() {
+        let Some(regex) = build_search_regex(search_cache) else {
             return;
-        }
-
-        let options = search_cache.search_options;
-
-        let mut pattern = if options.contains(SearchOptions::REGEX) {
-            query.clone()
-        } else {
-            regex::escape(query)
-        };
-
-        if options.contains(SearchOptions::WHOLE_WORD) {
-            pattern = format!(r"\b(?:{pattern})\b");
-        }
-
-        let regex = match regex::RegexBuilder::new(&pattern)
-            .case_insensitive(!options.contains(SearchOptions::CASE_SENSITIVE))
-            .build()
-        {
-            Ok(regex) => {
-                search_cache.search_regex_error = None;
-                regex
-            }
-            Err(err) => {
-                search_cache.search_regex_error = Some(err.to_string());
-                return;
-            }
         };
 
         // Mirror the options CommonMarkViewer itself parses with,
@@ -1316,40 +1291,40 @@ impl CommonMarkCache {
         search_cache.search_scroll_protection = 30;
     }
 
-    pub fn search_cache(&mut self, id: &Id) -> &mut crate::pulldown::SearchCache {
-        &mut scroll_cache(self, id).search_cache
+    pub fn search_cache_mut(&mut self, id: &Id) -> &mut crate::pulldown::SearchCache {
+        &mut viewer_cache(self, id).search_cache
     }
 
     /// The current set of search-match byte ranges for this viewer, or an
     /// empty slice if no search has been run yet.
     pub fn search_ranges(&self, id: &Id) -> &[Range<usize>] {
-        self.scroll
+        self.viewers
             .get(id)
-            .map(|sc| sc.search_cache.search_ranges())
+            .map(|vc| vc.search_cache.search_ranges())
             .unwrap_or_default()
     }
 
     /// The zero-based ordinal of the currently active (focused) search match,
     /// or `None` if there is no active match.
     pub fn active_match(&self, id: &Id) -> Option<usize> {
-        self.scroll.get(id)?.search_cache.active_match()
+        self.viewers.get(id)?.search_cache.active_match()
     }
 
     /// Advance the active match by `delta` steps (negative = backwards),
     /// wrapping around. Does nothing if there are no matches.
     pub fn go_to_match(&mut self, id: &Id, delta: isize) {
-        scroll_cache(self, id).search_cache.go_to_match(delta);
+        viewer_cache(self, id).search_cache.go_to_match(delta);
     }
 
     /// Mutable access to the search query string for this viewer, suitable
     /// for binding directly to a [`egui::TextEdit`].
     pub fn search_query_mut(&mut self, id: &Id) -> &mut String {
-        &mut scroll_cache(self, id).search_cache.search_query
+        &mut viewer_cache(self, id).search_cache.search_query
     }
 
     /// Mutable access to the search options bitflags for this viewer.
     pub fn search_options_mut(&mut self, id: &Id) -> &mut SearchOptions {
-        &mut scroll_cache(self, id).search_cache.search_options
+        &mut viewer_cache(self, id).search_cache.search_options
     }
 
     /// Synchronises the active search match to the current scroll position
@@ -1377,7 +1352,7 @@ impl CommonMarkCache {
     /// use [`sync_scrollable_active_match`](Self::sync_scrollable_active_match)
     /// instead (see the `scroll` example).
     pub fn sync_active_match(&mut self, id: &Id, user_scrolled: bool) {
-        let search_cache = &mut scroll_cache(self, id).search_cache;
+        let search_cache = &mut viewer_cache(self, id).search_cache;
 
         if user_scrolled {
             search_cache.search_scroll_protection = 0;
@@ -1447,11 +1422,11 @@ impl CommonMarkCache {
             return;
         }
 
-        // Call scroll_cache once and split the struct fields to avoid a double
-        // mutable borrow of `self` (search_cache lives inside the same ScrollableCache
+        // Call viewer_cache once and split the struct fields to avoid a double
+        // mutable borrow of `self` (search_cache lives inside the same ViewerCache
         // as split_points).
-        let scroll = scroll_cache(self, id);
-        let search_cache = &mut scroll.search_cache;
+        let vc = viewer_cache(self, id);
+        let search_cache = &mut vc.search_cache;
 
         if user_scrolled {
             search_cache.search_scroll_protection = 0;
@@ -1459,7 +1434,7 @@ impl CommonMarkCache {
         }
 
         let current_offset = search_cache
-            .viewport_start_byte_offset(&scroll.split_points)
+            .viewport_start_byte_offset(&vc.split_points)
             .unwrap_or(0);
 
         if !search_cache.search_ranges.is_empty()
@@ -1505,11 +1480,51 @@ impl CommonMarkCache {
     }
 }
 
-pub fn scroll_cache<'a>(cache: &'a mut CommonMarkCache, id: &Id) -> &'a mut ScrollableCache {
-    if !cache.scroll.contains_key(id) {
-        cache.scroll.insert(*id, Default::default());
+/// Builds the compiled search regex from the current query and options in
+/// `search_cache`, updating `search_regex_error` as a side-effect.
+///
+/// Returns `None` — and the caller should return early — when:
+/// - the query is empty (no-op), or
+/// - the regex fails to compile (invalid pattern; the error is stored in
+///   `search_regex_error` for display to the user).
+///
+/// On success clears `search_regex_error` and returns `Some(regex)`.
+fn build_search_regex(search_cache: &mut crate::pulldown::SearchCache) -> Option<regex::Regex> {
+    if search_cache.search_query.is_empty() {
+        return None;
     }
-    cache.scroll.get_mut(id).unwrap()
+
+    let options = search_cache.search_options;
+    let mut pattern = if options.contains(SearchOptions::REGEX) {
+        search_cache.search_query.clone()
+    } else {
+        regex::escape(&search_cache.search_query)
+    };
+
+    if options.contains(SearchOptions::WHOLE_WORD) {
+        pattern = format!(r"\b(?:{pattern})\b");
+    }
+
+    match regex::RegexBuilder::new(&pattern)
+        .case_insensitive(!options.contains(SearchOptions::CASE_SENSITIVE))
+        .build()
+    {
+        Ok(regex) => {
+            search_cache.search_regex_error = None;
+            Some(regex)
+        }
+        Err(err) => {
+            search_cache.search_regex_error = Some(err.to_string());
+            None
+        }
+    }
+}
+
+pub fn viewer_cache<'a>(cache: &'a mut CommonMarkCache, id: &Id) -> &'a mut ViewerCache {
+    if !cache.viewers.contains_key(id) {
+        cache.viewers.insert(*id, ViewerCache::default());
+    }
+    cache.viewers.get_mut(id).unwrap()
 }
 
 /// Should be called before any rendering

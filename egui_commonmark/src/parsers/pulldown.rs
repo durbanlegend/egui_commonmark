@@ -101,7 +101,7 @@ pub struct CommonMarkViewerInternal {
     content_origin_y: f32,
     /// `(global_match_index, virtual_y)` pairs accumulated across all
     /// `event_text` calls during this render pass. Flushed into
-    /// SearchCache [`CommonMarkCache`] at the end of `show()` (non-scrollable path only).
+    /// `SearchCache` [`CommonMarkCache`] at the end of `show()` (non-scrollable path only).
     search_match_ys_scratch: Vec<(usize, f32)>,
 }
 
@@ -185,13 +185,13 @@ impl CommonMarkViewerInternal {
         // only when the available width changes; stable frames reuse cached split points.
         let record_id: Option<Id> = split_points_id.or_else(|| {
             options.source_id.and_then(|id| {
-                let sc = scroll_cache(cache, &id);
+                let vc = viewer_cache(cache, &id);
                 let needs_rebuild =
-                    sc.split_points.is_empty() || (sc.available_size.x - max_width).abs() > 0.5;
+                    vc.split_points.is_empty() || (vc.available_size.x - max_width).abs() > 0.5;
                 if needs_rebuild {
-                    sc.split_points.clear();
-                    sc.heading_y_positions.clear();
-                    sc.available_size.x = max_width;
+                    vc.split_points.clear();
+                    vc.heading_y_positions.clear();
+                    vc.available_size.x = max_width;
                     Some(id)
                 } else {
                     None // existing split points are still valid; skip re-recording
@@ -205,13 +205,11 @@ impl CommonMarkViewerInternal {
         // record_id is None (split points are cached) but the user may have
         // just pressed Next/Prev, so we must still honour the request.
         let scroll_source_id = split_points_id.or(options.source_id);
-        self.want_scroll_to_active_match = scroll_source_id
-            .map(|id| {
-                scroll_cache(cache, &id)
-                    .search_cache
-                    .take_pending_scroll_to_active_match()
-            })
-            .unwrap_or(false);
+        self.want_scroll_to_active_match = scroll_source_id.is_some_and(|id| {
+            viewer_cache(cache, &id)
+                .search_cache
+                .take_pending_scroll_to_active_match()
+        });
         self.search_match_ys_scratch.clear();
         let layout = egui::Layout::left_to_right(egui::Align::BOTTOM).with_main_wrap(true);
 
@@ -224,9 +222,9 @@ impl CommonMarkViewerInternal {
             let content_origin_y = self.full_render(cache, options, text, record_id, max_width, ui);
 
             {
-                let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
                 // deferral to make it consistent no matter whether the target is before or after the link
-                *sc.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+                *vc.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
             }
 
             if let Some(source_id) = split_points_id {
@@ -234,12 +232,12 @@ impl CommonMarkViewerInternal {
                     // Images are still loading — split points are unreliable.
                     // Discard and leave page_size = None so the full render repeats
                     // next frame (the image loader triggers the repaint automatically).
-                    let sc = scroll_cache(cache, &source_id);
-                    sc.split_points.clear();
-                    sc.heading_y_positions.clear();
+                    let vc = viewer_cache(cache, &source_id);
+                    vc.split_points.clear();
+                    vc.heading_y_positions.clear();
                 } else {
                     let final_y = ui.next_widget_position().y;
-                    scroll_cache(cache, &source_id).page_size =
+                    viewer_cache(cache, &source_id).page_size =
                         Some(egui::vec2(max_width, final_y - content_origin_y));
                 }
             } else {
@@ -248,15 +246,15 @@ impl CommonMarkViewerInternal {
                 // match after the user scrolls.
                 let viewport_top_y = ui.clip_rect().min.y - content_origin_y;
                 let viewport_height = ui.clip_rect().height();
-                let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
-                sc.search_cache.update_show_viewport(
+                let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                vc.search_cache.update_show_viewport(
                     self.search_match_ys_scratch.drain(..),
                     viewport_top_y,
                     viewport_height,
                 );
-                // For show_with_id: keep the `ScrollableCache`'s viewport position in sync
+                // For show_with_id: keep the ViewerCache's viewport position in sync
                 // so that `viewport_start_byte_offset` returns the current scroll location.
-                sc.search_cache.last_viewport_top_y = viewport_top_y;
+                vc.search_cache.last_viewport_top_y = viewport_top_y;
             }
         });
 
@@ -319,7 +317,7 @@ impl CommonMarkViewerInternal {
                 pulldown_cmark::Event::Start(pulldown_cmark::Tag::Heading { id: Some(id), .. }),
             ) = (record_id, &e)
             {
-                scroll_cache(cache, &sid)
+                viewer_cache(cache, &sid)
                     .heading_y_positions
                     .insert(id.to_string(), ui.cursor().min.y - content_origin_y);
             }
@@ -346,10 +344,10 @@ impl CommonMarkViewerInternal {
             if let Some(source_id) = record_id
                 && is_safe_block_end
             {
-                let sc = scroll_cache(cache, &source_id);
+                let vc = viewer_cache(cache, &source_id);
                 let end_position = ui.next_widget_position();
 
-                let split_point_exists = sc.split_points.iter().any(|sp| sp.event_index == index);
+                let split_point_exists = vc.split_points.iter().any(|sp| sp.event_index == index);
 
                 if !split_point_exists {
                     // Use `block_start_position` (`Start` event) not `start_position`
@@ -358,7 +356,7 @@ impl CommonMarkViewerInternal {
                     let vstart = egui::pos2(raw_vstart.x, raw_vstart.y - content_origin_y);
                     let vend = egui::pos2(end_position.x, end_position.y - content_origin_y);
                     let src_span = block_start_src.take().unwrap_or(block_end_src)..block_end_src;
-                    sc.split_points.push(SplitPoint {
+                    vc.split_points.push(SplitPoint {
                         event_index: index,
                         vstart,
                         vend,
@@ -391,14 +389,14 @@ impl CommonMarkViewerInternal {
             // anchoring), rebuilt only on width change — matching egui's own
             // galley-cache invalidation and the `show_with_id` path.
             let needs_rebuild = {
-                let sc = scroll_cache(cache, &source_id);
-                sc.page_size = None;
-                sc.heading_y_positions.clear(); // not used in this path
-                let rebuild = sc.split_points.is_empty()
-                    || (sc.available_size.x - available_size.x).abs() > 0.5;
+                let vc = viewer_cache(cache, &source_id);
+                vc.page_size = None;
+                vc.heading_y_positions.clear(); // not used in this path
+                let rebuild = vc.split_points.is_empty()
+                    || (vc.available_size.x - available_size.x).abs() > 0.5;
                 if rebuild {
-                    sc.split_points.clear();
-                    sc.available_size.x = available_size.x;
+                    vc.split_points.clear();
+                    vc.available_size.x = available_size.x;
                 }
                 rebuild
             };
@@ -409,18 +407,18 @@ impl CommonMarkViewerInternal {
                     // Capture viewport top before content is placed; `clip_rect`
                     // already reflects the current scroll position.
                     let viewport_top_y = ui.clip_rect().min.y - ui.next_widget_position().y;
-                    let sc = scroll_cache(cache, &source_id);
-                    apply_pending_scroll_delta(sc, ui);
+                    let vc = viewer_cache(cache, &source_id);
+                    apply_pending_scroll_delta(vc, ui);
                     let sid = if needs_rebuild { Some(source_id) } else { None };
                     self.show(ui, cache, options, text, sid);
                     if needs_rebuild {
                         // `show()` sets page_size as a side-effect of receiving
                         // `Some(source_id)`; clear it so the next frame still
                         // takes this full-render path, not the viewport-slice one.
-                        scroll_cache(cache, &source_id).page_size = None;
+                        viewer_cache(cache, &source_id).page_size = None;
                     }
                     // Keep last_viewport_top_y in sync for viewport_start_byte_offset.
-                    scroll_cache(cache, &source_id)
+                    viewer_cache(cache, &source_id)
                         .search_cache
                         .last_viewport_top_y = viewport_top_y;
                 });
@@ -429,16 +427,16 @@ impl CommonMarkViewerInternal {
 
         // If the scroll cache is invalidated, force a full render.
         // Extract page_size in a short scope so `cache` is free for the else closure.
-        let page_size = scroll_cache(cache, &source_id).page_size;
+        let page_size = viewer_cache(cache, &source_id).page_size;
         let Some(page_size) = page_size else {
             egui::ScrollArea::vertical()
                 .id_salt(scroll_id)
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    apply_pending_scroll_delta(scroll_cache(cache, &source_id), ui);
+                    apply_pending_scroll_delta(viewer_cache(cache, &source_id), ui);
                     self.show(ui, cache, options, text, Some(source_id));
                 });
-            scroll_cache(cache, &source_id).available_size = available_size;
+            viewer_cache(cache, &source_id).available_size = available_size;
             return;
         };
 
@@ -450,7 +448,7 @@ impl CommonMarkViewerInternal {
         // (below) provides a cheap blind scroll toward its approximate
         // position using data already collected by the last full render —
         // this never requires re-rendering the whole document.
-        self.want_scroll_to_active_match = scroll_cache(cache, &source_id)
+        self.want_scroll_to_active_match = viewer_cache(cache, &source_id)
             .search_cache
             .take_pending_scroll_to_active_match();
 
@@ -466,11 +464,11 @@ impl CommonMarkViewerInternal {
         // Resolve any pending TOC scroll via the cached heading positions so that
         // navigation works even when the target is outside the rendered slice.
         let pending_scroll_y: Option<f32> = {
-            let sc = scroll_cache(cache, &source_id);
-            let slug_owned = sc.scroll_to_id_target().map(ToOwned::to_owned);
+            let vc = viewer_cache(cache, &source_id);
+            let slug_owned = vc.scroll_to_id_target().map(ToOwned::to_owned);
             slug_owned.as_ref().and_then(|slug| {
-                if let Some(&y) = sc.heading_y_positions.get(slug) {
-                    sc.scroll_to_id_target_mut().take();
+                if let Some(&y) = vc.heading_y_positions.get(slug) {
+                    vc.scroll_to_id_target_mut().take();
                     Some(y)
                 } else {
                     None
@@ -478,8 +476,8 @@ impl CommonMarkViewerInternal {
             })
         };
         let pending_delta = {
-            let sc = scroll_cache(cache, &source_id);
-            std::mem::replace(&mut sc.pending_scroll_delta, egui::Vec2::ZERO)
+            let vc = viewer_cache(cache, &source_id);
+            std::mem::replace(&mut vc.pending_scroll_delta, egui::Vec2::ZERO)
         };
 
         // Virtual Y of the active match used to decide whether a blind scroll is needed
@@ -494,14 +492,14 @@ impl CommonMarkViewerInternal {
         // animation of scrolling to the previous page then back.
         //
         // Fall back to the block-level split-point approximation only when
-        // the match was not rendered last frame (Y stored as 0.0).
-        // All scroll-cache data needed before the viewport render has been extracted
+        // the match was not rendered last frame (Y stored as NEG_INFINITY).
+        // All viewer-cache data needed before the viewport render has been extracted
         // into owned/copied values above. `cache` now has no long-lived borrows, so
-        // the closures below can capture it directly and also call scroll_cache()
+        // the closures below can capture it directly and also call viewer_cache()
         // inside short-lived scopes.
         let pending_match_scroll_y: Option<f32> = if self.want_scroll_to_active_match {
-            let sc = scroll_cache(cache, &source_id);
-            let search_cache = &sc.search_cache;
+            let vc = viewer_cache(cache, &source_id);
+            let search_cache = &vc.search_cache;
             let precise_y = search_cache
                 .active_match()
                 .and_then(|i| search_cache.search_match_virtual_ys().get(i).copied())
@@ -513,7 +511,7 @@ impl CommonMarkViewerInternal {
                     .active_search_range()
                     .map(|r| r.start)
                     .and_then(|start| {
-                        search_cache.virtual_y_for_byte_offset(&sc.split_points, start)
+                        search_cache.virtual_y_for_byte_offset(&vc.split_points, start)
                     })
             }
         } else {
@@ -575,23 +573,23 @@ impl CommonMarkViewerInternal {
                 ui.allocate_ui_with_layout(egui::vec2(max_width, 0.0), layout, |ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
 
-                    // Compute the slice parameters and release the scroll_cache borrow
+                    // Compute the slice parameters and release the viewer_cache borrow
                     // before the push_id closure so that `cache` is freely accessible
                     // inside it.
                     let viewport_height = viewport.max.y - viewport.min.y;
                     let render_below = viewport.max.y + viewport_height;
                     let (skip_height, skip_count, take_count) = {
-                        let sc = scroll_cache(cache, &source_id);
-                        let search_cache = &mut sc.search_cache;
+                        let vc = viewer_cache(cache, &source_id);
+                        let search_cache = &mut vc.search_cache;
                         search_cache.last_viewport_top_y = viewport.min.y;
                         search_cache.last_viewport_height = viewport_height;
-                        let preceding_split = sc
+                        let preceding_split = vc
                             .split_points
                             .iter()
                             .rfind(|sp| sp.vend.y < viewport.min.y)
                             .cloned();
                         let first_vend = preceding_split.as_ref().map_or(Pos2::ZERO, |sp| sp.vend);
-                        let last_event_index = sc
+                        let last_event_index = vc
                             .split_points
                             .iter()
                             .find(|sp| sp.vstart.y > render_below)
@@ -611,7 +609,7 @@ impl CommonMarkViewerInternal {
                             (0, last_event_index)
                         };
                         (skip_height, skip_count, take_count)
-                    }; // scroll_cache borrow released here
+                    }; // viewer_cache borrow released here
 
                     // Set `content_origin_y` to the screen Y of virtual-Y = 0 (the
                     // document top) for this frame. This makes match Ys recorded
@@ -691,16 +689,16 @@ impl CommonMarkViewerInternal {
 
                             // Mirror `show()`'s deferred flush so that clicking a #fragment
                             // link while in the viewport path triggers a scroll next frame.
-                            // Borrow sc fresh here: `cache` is free now that the
+                            // Borrow vc fresh here: `cache` is free now that the
                             // process_event loop above has finished using it.
-                            let sc = scroll_cache(cache, &source_id);
-                            *sc.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
+                            let vc = viewer_cache(cache, &source_id);
+                            *vc.scroll_to_id_target_mut() = self.deferred_scroll_to_heading.take();
 
                             // Flush the per-match virtual-Y positions collected by
                             // `event_text` into the cache, exactly as the non-scrollable
                             // show() path does. Skipped on discarded frames (blind scroll
                             // toward an off-screen match) since no widgets rendered.
-                            sc.search_cache.update_show_viewport(
+                            vc.search_cache.update_show_viewport(
                                 self.search_match_ys_scratch.drain(..),
                                 viewport.min.y,
                                 viewport_height,
@@ -713,10 +711,10 @@ impl CommonMarkViewerInternal {
         // If any image in this render reported zero height, split points are stale.
         // Discard them so the next frame falls back to a full render.
         if self.any_image_loading {
-            let sc = scroll_cache(cache, &source_id);
-            sc.page_size = None;
-            sc.split_points.clear();
-            sc.heading_y_positions.clear();
+            let vc = viewer_cache(cache, &source_id);
+            vc.page_size = None;
+            vc.split_points.clear();
+            vc.heading_y_positions.clear();
         }
 
         // The active match wasn't inside the slice we just rendered. Re-arm
@@ -730,10 +728,10 @@ impl CommonMarkViewerInternal {
         // blocks), which is the same data a full render would need to
         // populate anyway.
         if self.want_scroll_to_active_match {
-            let sc = scroll_cache(cache, &source_id);
-            if sc.search_cache.retry_scroll_to_active_match() {
-                if sc.split_points.is_empty() {
-                    sc.page_size = None;
+            let vc = viewer_cache(cache, &source_id);
+            if vc.search_cache.retry_scroll_to_active_match() {
+                if vc.split_points.is_empty() {
+                    vc.page_size = None;
                 }
             }
         }
@@ -744,13 +742,13 @@ impl CommonMarkViewerInternal {
         // width, so a height-only change must never force a full render, especially on
         // a large document.
         {
-            let sc = scroll_cache(cache, &source_id);
-            let width_changed = (available_size.x - sc.available_size.x).abs() > 0.5;
-            sc.available_size = available_size; // always keep Y bookkeeping current
+            let vc = viewer_cache(cache, &source_id);
+            let width_changed = (available_size.x - vc.available_size.x).abs() > 0.5;
+            vc.available_size = available_size; // always keep Y bookkeeping current
             if width_changed {
-                sc.page_size = None;
-                sc.split_points.clear();
-                sc.heading_y_positions.clear();
+                vc.page_size = None;
+                vc.split_points.clear();
+                vc.heading_y_positions.clear();
             }
         }
     }
@@ -910,8 +908,8 @@ impl CommonMarkViewerInternal {
                     // `update_search_matches` stored the keyword's source bytes as the
                     // match range, so we check overlap with `ident_src` to decide.
                     let (has_title_match, is_title_active, title_global_idx) = {
-                        let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
-                        let search_cache = &sc.search_cache;
+                        let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+                        let search_cache = &vc.search_cache;
                         let ranges = search_cache.search_ranges();
                         let has_match = !ranges.is_empty()
                             && ranges
@@ -983,6 +981,7 @@ impl CommonMarkViewerInternal {
         }
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn table<'e>(
         &mut self,
         events: &mut Peekable<impl Iterator<Item = EventIteratorItem<'e>>>,
@@ -1012,6 +1011,7 @@ impl CommonMarkViewerInternal {
                 let Table { header, rows } = parse_table(events);
 
                 ui.spacing_mut().scroll.content_margin.bottom = ui.spacing().scroll.bar_width as i8;
+
                 egui::ScrollArea::horizontal()
                     .id_salt(id.with("_hscroll"))
                     .show(ui, |ui| {
@@ -1068,7 +1068,7 @@ impl CommonMarkViewerInternal {
             // so the outer vertical scroll area can bring the row into view.
             if want_scroll_before
                 && !self.want_scroll_to_active_match
-                && let Some(active_idx) = scroll_cache(cache, &id).search_cache.active_match()
+                && let Some(active_idx) = viewer_cache(cache, &id).search_cache.active_match()
             {
                 let match_virtual_y = self.search_match_ys_scratch[scratch_start..]
                     .iter()
@@ -1179,8 +1179,8 @@ impl CommonMarkViewerInternal {
         } else if let Some(link) = &mut self.link {
             link.push_text(self.text_style.to_richtext(ui, &text), src_span);
         } else {
-            let sc = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
-            let search_cache = &mut sc.search_cache;
+            let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+            let search_cache = &mut vc.search_cache;
 
             let rich_text = self.text_style.to_richtext(ui, &text);
             let ranges = search_cache.search_ranges();
@@ -1242,18 +1242,18 @@ impl CommonMarkViewerInternal {
         cache: &mut CommonMarkCache,
         options: &CommonMarkOptions,
     ) {
-        let scroll_cache = scroll_cache(cache, &options.source_id.unwrap_or(Id::NULL));
+        let vc = viewer_cache(cache, &options.source_id.unwrap_or(Id::NULL));
         match tag {
             pulldown_cmark::Tag::Paragraph => {
                 self.line.try_insert_start(ui);
             }
             pulldown_cmark::Tag::Heading { level, id, .. } => {
-                if let Some(scroll_target) = scroll_cache.scroll_to_id_target()
+                if let Some(scroll_target) = vc.scroll_to_id_target()
                     && let Some(id) = id
                     && id.into_string() == scroll_target
                 {
                     ui.scroll_to_cursor(Some(egui::Align::TOP));
-                    scroll_cache.scroll_to_id_target_mut().take();
+                    vc.scroll_to_id_target_mut().take();
                 }
 
                 // Headings should always insert a newline even if it is at the start.
@@ -1509,8 +1509,8 @@ impl CommonMarkViewerInternal {
     }
 }
 
-fn apply_pending_scroll_delta(scroll_cache: &mut ScrollableCache, ui: &Ui) {
-    let delta = std::mem::replace(&mut scroll_cache.pending_scroll_delta, egui::Vec2::ZERO);
+fn apply_pending_scroll_delta(vc: &mut ViewerCache, ui: &Ui) {
+    let delta = std::mem::replace(&mut vc.pending_scroll_delta, egui::Vec2::ZERO);
     if delta != egui::Vec2::ZERO {
         ui.scroll_with_delta(delta);
     }
@@ -1570,7 +1570,7 @@ mod perf_tests {
             })
             .collect();
         let mut cache = CommonMarkCache::default();
-        let search_cache = cache.search_cache(&source_id);
+        let search_cache = cache.search_cache_mut(&source_id);
         search_cache.set_search_ranges(ranges.clone());
         search_cache.set_active_search_range(ranges.first().cloned());
 
@@ -1592,7 +1592,7 @@ mod perf_tests {
         let mut worst: std::time::Duration = std::time::Duration::ZERO;
         for i in 0..12 {
             let active = &ranges[i % ranges.len()];
-            let search_cache = cache.search_cache(&source_id);
+            let search_cache = cache.search_cache_mut(&source_id);
             search_cache.set_active_search_range(Some(active.clone()));
             search_cache.scroll_to_active_search_match();
 
@@ -1627,7 +1627,7 @@ mod perf_tests {
         let target = pos..pos + query.len();
 
         let mut cache = CommonMarkCache::default();
-        let search_cache = cache.search_cache(&source_id);
+        let search_cache = cache.search_cache_mut(&source_id);
         search_cache.set_search_ranges(vec![target.clone()]);
 
         // Real fonts, not `FontDefinitions::empty()`: with empty fonts, text
@@ -1652,7 +1652,7 @@ mod perf_tests {
         });
         output.drop_without_applying_deltas();
 
-        let search_cache = cache.search_cache(&source_id);
+        let search_cache = cache.search_cache_mut(&source_id);
         search_cache.set_active_search_range(Some(target));
         search_cache.scroll_to_active_search_match();
 
@@ -1702,7 +1702,7 @@ mod perf_tests {
         );
 
         let mut cache = CommonMarkCache::default();
-        let search_cache = cache.search_cache(&source_id);
+        let search_cache = cache.search_cache_mut(&source_id);
         search_cache.set_search_ranges(ranges.clone());
         search_cache.set_active_search_range(ranges.first().cloned());
         // Note: `scroll_to_active_search_match()` is deliberately NOT called here;

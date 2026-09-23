@@ -20,7 +20,7 @@ pub struct SplitPoint {
     /// Virtual end position of this block.
     pub vend: Pos2,
     /// Source byte range of this block in the original document text. Lets
-    /// [`ScrollableCache::virtual_y_for_byte_offset`] approximate on-screen
+    /// [`ViewerCache::virtual_y_for_byte_offset`] approximate on-screen
     /// positions of arbitrary offsets (e.g. search matches) without a fresh
     /// full render.
     pub src_span: Range<usize>,
@@ -100,7 +100,7 @@ impl SearchCache {
     /// but to wait for one.
     pub fn virtual_y_for_byte_offset(
         &self,
-        split_points: &Vec<SplitPoint>,
+        split_points: &[SplitPoint],
         offset: usize,
     ) -> Option<f32> {
         if let Some(sp) = split_points.iter().find(|sp| sp.src_span.contains(&offset)) {
@@ -123,11 +123,7 @@ impl SearchCache {
     /// source byte offset of whatever is at (or just before) the given
     /// virtual Y, using the same split points. Returns `None` only if there
     /// are no split points at all yet.
-    pub fn byte_offset_for_virtual_y(
-        &self,
-        split_points: &Vec<SplitPoint>,
-        y: f32,
-    ) -> Option<usize> {
+    pub fn byte_offset_for_virtual_y(&self, split_points: &[SplitPoint], y: f32) -> Option<usize> {
         split_points
             .iter()
             .rev()
@@ -238,7 +234,7 @@ impl SearchCache {
     /// Returns `None` if nothing has been rendered for `source_id` yet, or
     /// if it was rendered with [`viewport_cache`](crate::CommonMarkViewer::viewport_cache)
     /// disabled (in which case the whole document is visible-ish anyway).
-    pub fn viewport_start_byte_offset(&self, split_points: &Vec<SplitPoint>) -> Option<usize> {
+    pub fn viewport_start_byte_offset(&self, split_points: &[SplitPoint]) -> Option<usize> {
         self.byte_offset_for_virtual_y(split_points, self.last_viewport_top_y)
     }
 
@@ -323,7 +319,7 @@ impl SearchCache {
 /// A content cache for document-viewer-specific content, requiring an `egui::Id`
 /// as the viewer identifier.
 #[derive(Default, Debug)]
-pub struct ScrollableCache {
+pub struct ViewerCache {
     pub available_size: Vec2,
     pub page_size: Option<Vec2>,
     /// One [`SplitPoint`] per top-level block at a safe renderer restart
@@ -341,7 +337,7 @@ pub struct ScrollableCache {
     pub search_cache: SearchCache,
 }
 
-impl ScrollableCache {
+impl ViewerCache {
     /// Accumulate a scroll delta to be applied inside the next [`show_scrollable`] or
     /// [`apply_pending_scroll_delta`] call and then cleared.
     /// Positive y scrolls toward the top; negative toward the bottom.
