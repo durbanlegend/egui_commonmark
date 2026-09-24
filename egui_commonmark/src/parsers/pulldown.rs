@@ -752,10 +752,8 @@ impl CommonMarkViewerInternal {
         #[cfg(feature = "regex")]
         if self.want_scroll_to_active_match {
             let vc = viewer_cache(cache, &source_id);
-            if vc.search_cache.retry_scroll_to_active_match() {
-                if vc.split_points.is_empty() {
-                    vc.page_size = None;
-                }
+            if vc.search_cache.retry_scroll_to_active_match() && vc.split_points.is_empty() {
+                vc.page_size = None;
             }
         }
 
@@ -1275,7 +1273,6 @@ impl CommonMarkViewerInternal {
                     ui.scroll_to_rect(rect, Some(egui::Align::Center));
                     self.want_scroll_to_active_match = false;
                 }
-                return;
             }
             #[cfg(not(feature = "regex"))]
             ui.label(rich_text);
