@@ -824,8 +824,6 @@ pub struct CommonMarkCache {
     #[cfg(feature = "better_syntax_highlighting")]
     ts: ThemeSet,
 
-    // /// The ID of the heading to scroll to. This is set when a link whose destination is a fragment (e.g. `#my-heading`) has been clicked.
-    // scroll_to_id_target: Option<String>,
     link_hooks: HashMap<String, bool>,
     viewers: HashMap<Id, ViewerCache>,
     pub(self) has_installed_loaders: bool,

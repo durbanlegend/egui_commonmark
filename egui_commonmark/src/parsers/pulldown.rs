@@ -438,7 +438,7 @@ impl CommonMarkViewerInternal {
             return;
         }
 
-        // If the scroll cache is invalidated, force a full render.
+        // If the viewer cache is invalidated, force a full render.
         // Extract page_size in a short scope so `cache` is free for the else closure.
         let page_size = viewer_cache(cache, &source_id).page_size;
         let Some(page_size) = page_size else {
@@ -534,6 +534,7 @@ impl CommonMarkViewerInternal {
         } else {
             None
         };
+
         egui::ScrollArea::vertical()
             .id_salt(scroll_id)
             // Elements have different widths, so the scroll area cannot try to shrink to the
@@ -1030,14 +1031,14 @@ impl CommonMarkViewerInternal {
             let id = ui.id().with("_table").with(self.curr_table);
             self.curr_table += 1;
 
-            // egui's `ScrollArea` intercepts `scroll_to_rect` calls for ALL dimensions,
-            // even those it doesn't scroll (see egui source: "We always take both
-            // scroll targets regardless of which scroll axes are enabled").  This
-            // means `scroll_to_rect` called from `event_text()` inside the table's
-            // horizontal scroll area silently discards the vertical component,
-            // preventing the outer vertical scroll area from bringing the row into
-            // view.  Snapshot the scroll-request state before the table renders;
-            // if the table consumed it we re-issue on the outer `ui` afterwards.
+            // egui's `ScrollArea` consumes `scroll_to_rect` calls for BOTH dimensions
+            // (see egui source: "We always take both scroll targets regardless of
+            // which scroll axes are enabled").  This means `scroll_to_rect` called
+            // from `event_text()` inside the table's horizontal scroll area silently
+            // discards the vertical component, preventing the outer vertical scroll
+            // area from bringing the row into view.  Snapshot the scroll-request
+            // state before the table renders; if the table consumed it we re-issue
+            // on the outer `ui` afterwards.
             #[cfg(feature = "regex")]
             let want_scroll_before = self.want_scroll_to_active_match;
             #[cfg(feature = "regex")]

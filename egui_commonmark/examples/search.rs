@@ -60,7 +60,7 @@ impl eframe::App for App {
         ui.set_min_height(512.0);
 
         // Derive the viewer Id from the Ui context each frame. This scopes it
-        // to the widget hierarchy (emilk's preferred pattern) and avoids
+        // to the widget hierarchy (egui's preferred pattern) and avoids
         // global hash collisions. Stable as long as the widget tree is stable.
         let id = ui.make_persistent_id(VIEWER_ID_SALT);
 

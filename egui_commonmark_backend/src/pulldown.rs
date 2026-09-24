@@ -52,8 +52,7 @@ pub struct SearchCache {
     pub active_match: Option<usize>,
     /// The y positions of the search matches, relative to the document
     pub search_match_virtual_ys: Vec<f32>,
-
-    /// use with `show_scrollable`. Used to detect viewport movement without
+    /// Use with `show_scrollable`. Used to detect viewport movement without
     /// relying on input events.
     pub last_viewport_offset: usize,
     /// Counts down after a search-initiated scroll (`go_to_match` /
@@ -335,7 +334,8 @@ pub struct ViewerCache {
     /// Keyboard / programmatic scroll delta applied inside the next
     /// `show_scrollable` call and then cleared.
     pub pending_scroll_delta: egui::Vec2,
-    /// The ID of the heading to scroll to. This is set when a link whose destination is a fragment (e.g. `#my-heading`) has been clicked.
+    /// The ID of the heading to scroll to. This is set when a link whose destination is
+    /// a fragment (e.g. `#my-heading`) has been clicked.
     scroll_to_id_target: Option<String>,
     #[cfg(feature = "regex")]
     pub search_cache: SearchCache,
@@ -356,12 +356,14 @@ impl ViewerCache {
         self.pending_scroll_delta += delta;
     }
 
-    /// Get the desired fragment. This is the id which will be scrolled to if it is found in the markdown.
+    /// Get the desired fragment. This is the id which will be scrolled to if it is found
+    /// in the markdown.
     pub fn scroll_to_id_target(&self) -> Option<&str> {
         self.scroll_to_id_target.as_deref()
     }
 
-    /// Get mutable access to the desired fragment. Setting this will cause the viewer to scroll to the heading with this id if it exists. Setting it to None will prevent scrolling.
+    /// Get mutable access to the desired fragment. Setting this will cause the viewer to scroll
+    /// to the heading with this id if it exists. Setting it to None will prevent scrolling.
     pub fn scroll_to_id_target_mut(&mut self) -> &mut Option<String> {
         &mut self.scroll_to_id_target
     }
