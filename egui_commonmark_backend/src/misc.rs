@@ -4,6 +4,8 @@ use crate::{alerts::try_get_alert, search};
 #[cfg(feature = "regex")]
 use bitflags::bitflags;
 use egui::{Id, RichText, TextBuffer, TextStyle, Ui, text::LayoutJob};
+#[cfg(feature = "regex")]
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -443,7 +445,7 @@ impl Image {
     ///   these so that `sync_active_match` can locate the image on screen.
     #[cfg_attr(
         not(feature = "regex"),
-        allow(unused_variables), // cache, want_scroll_to_active_match, content_origin_y,
+        expect(unused_variables), // cache, want_scroll_to_active_match, content_origin_y,
                                   // alt_src_spans only used in the regex-gated search section
     )]
     pub fn end(
@@ -725,7 +727,10 @@ impl CodeBlock {
             .settings
             .background
             .map(syntect_color_to_egui)
-            .unwrap_or(style.visuals.extreme_bg_color);
+            .unwrap_or_else(|| {
+                eprintln!("Couldn't convert theme background to egui");
+                style.visuals.extreme_bg_color
+            });
 
         if let Some(color) = curr_theme.settings.selection_foreground {
             style.visuals.selection.bg_fill = syntect_color_to_egui(color);
@@ -740,7 +745,7 @@ impl CodeBlock {
         ui: &Ui,
         text: &str,
     ) -> egui::text::LayoutJob {
-        if let Some(syntax) = cache.ps.find_syntax_by_extension(extension) {
+        if let Some(syntax) = cache.ps.find_syntax_by_token(extension) {
             let mut job = egui::text::LayoutJob::default();
             let mut h = HighlightLines::new(syntax, cache.curr_theme(ui, options));
 
@@ -1030,9 +1035,9 @@ impl CommonMarkCache {
         let user_scroll_input =
             ui.input(egui::InputState::is_scrolling) || key_scroll_delta.is_some();
 
-        if user_scroll_input {
-            #[cfg(feature = "regex")]
-            {
+        #[cfg(feature = "regex")]
+        {
+            if user_scroll_input {
                 vc.search_cache.search_scroll_protection = 0;
             }
         }
@@ -1166,7 +1171,7 @@ impl CommonMarkCache {
         macro_rules! flush_run {
             () => {
                 if !run_segs.is_empty() {
-                    for m in regex.find_iter(&run_text) {
+                    for m in regex.find_iter(&run_text).flatten() {
                         let cstart = m.start();
                         let cend = m.end();
                         // Segment containing the first byte of the match.
@@ -1191,7 +1196,7 @@ impl CommonMarkCache {
         macro_rules! flush_pending {
             () => {
                 for (text, r) in pending_buf.drain(..) {
-                    for m in regex.find_iter(&text) {
+                    for m in regex.find_iter(&text).flatten() {
                         search_cache
                             .search_ranges
                             .push(r.start + m.start()..r.start + m.end());
@@ -1544,7 +1549,9 @@ impl CommonMarkCache {
 ///   `search_regex_error` for display to the user).
 ///
 /// On success clears `search_regex_error` and returns `Some(regex)`.
-fn build_search_regex(search_cache: &mut crate::pulldown::SearchCache) -> Option<regex::Regex> {
+fn build_search_regex(
+    search_cache: &mut crate::pulldown::SearchCache,
+) -> Option<fancy_regex::Regex> {
     if search_cache.search_query.is_empty() {
         return None;
     }
@@ -1553,14 +1560,14 @@ fn build_search_regex(search_cache: &mut crate::pulldown::SearchCache) -> Option
     let mut pattern = if options.contains(SearchOptions::REGEX) {
         search_cache.search_query.clone()
     } else {
-        regex::escape(&search_cache.search_query)
+        fancy_regex::escape(&search_cache.search_query).to_string()
     };
 
     if options.contains(SearchOptions::WHOLE_WORD) {
         pattern = format!(r"\b(?:{pattern})\b");
     }
 
-    match regex::RegexBuilder::new(&pattern)
+    match fancy_regex::RegexBuilder::new(&(Cow::from(pattern)))
         .case_insensitive(!options.contains(SearchOptions::CASE_SENSITIVE))
         .build()
     {
