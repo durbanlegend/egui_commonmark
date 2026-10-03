@@ -163,6 +163,19 @@ impl CommonMarkOptions<'_> {
     }
 }
 
+use egui::Color32;
+
+#[derive(Clone, Copy, Debug)]
+pub struct MdColours {
+    pub heading: Color32,
+    pub bold: Color32,
+    pub italic: Color32,
+    pub code: Color32,
+    pub quote: Color32,
+    pub list: Color32,
+    pub link: Color32,
+}
+
 #[derive(Default, Clone)]
 pub struct Style {
     pub heading: Option<u8>,
@@ -237,6 +250,18 @@ impl Style {
 
         if self.code {
             text = text.code();
+        }
+
+        if let Some(c) = ui.ctx().data(|d| d.get_temp::<MdColours>(egui::Id::NULL)) {
+            if self.heading.is_some() {
+                text = text.color(c.heading);
+            } else if self.strong {
+                text = text.color(c.bold);
+            } else if self.emphasis {
+                text = text.color(c.italic);
+            } else if self.code {
+                text = text.color(c.code);
+            }
         }
 
         text
