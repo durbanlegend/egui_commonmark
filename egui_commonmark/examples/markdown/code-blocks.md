@@ -13,12 +13,16 @@ let mut cache = CommonMarkCache::default();
 CommonMarkViewer::new("viewer").show(ui, &mut cache, markdown);
 ```
 
-The `better_syntax_highlighting` feature does not have toml highlighting by
-default. It will therefore fallback to default highlighting.
-
 ```toml
 egui_commonmark = "0.10"
 image = { version = "0.24", default-features = false, features = ["png"] }
+```
+
+Code fences with an unrecognised or missing info string will fall back to `syntect` plain text.
+
+```powershell
+# Get a list of all running services starting with "Win"
+Get-Service -Name "Win*" | Select-Object Name, Status, DisplayName
 ```
 
 - ```rs
